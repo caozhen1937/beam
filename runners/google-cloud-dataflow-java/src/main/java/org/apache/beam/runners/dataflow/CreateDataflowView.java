@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.dataflow;
 
 import org.apache.beam.sdk.transforms.PTransform;
@@ -25,21 +24,31 @@ import org.apache.beam.sdk.values.PCollectionView;
 /** A {@link DataflowRunner} marker class for creating a {@link PCollectionView}. */
 public class CreateDataflowView<ElemT, ViewT>
     extends PTransform<PCollection<ElemT>, PCollection<ElemT>> {
-  public static <ElemT, ViewT> CreateDataflowView<ElemT, ViewT> of(PCollectionView<ViewT> view) {
-    return new CreateDataflowView<>(view);
+  public static <ElemT, ViewT> CreateDataflowView<ElemT, ViewT> forBatch(
+      PCollectionView<ViewT> view) {
+    return new CreateDataflowView<>(view, false);
+  }
+
+  public static <ElemT, ViewT> CreateDataflowView<ElemT, ViewT> forStreaming(
+      PCollectionView<ViewT> view) {
+    return new CreateDataflowView<>(view, true);
   }
 
   private final PCollectionView<ViewT> view;
+  private final boolean streaming;
 
-  private CreateDataflowView(PCollectionView<ViewT> view) {
+  private CreateDataflowView(PCollectionView<ViewT> view, boolean streaming) {
     this.view = view;
+    this.streaming = streaming;
   }
 
   @Override
   public PCollection<ElemT> expand(PCollection<ElemT> input) {
-    return PCollection.<ElemT>createPrimitiveOutputInternal(
-            input.getPipeline(), input.getWindowingStrategy(), input.isBounded())
-        .setCoder(input.getCoder());
+    if (streaming) {
+      return PCollection.createPrimitiveOutputInternal(
+          input.getPipeline(), input.getWindowingStrategy(), input.isBounded(), input.getCoder());
+    }
+    return (PCollection) view.getPCollection();
   }
 
   public PCollectionView<ViewT> getView() {

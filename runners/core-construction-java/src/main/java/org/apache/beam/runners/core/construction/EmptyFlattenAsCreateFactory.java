@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.core.construction;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -58,7 +57,7 @@ public class EmptyFlattenAsCreateFactory<T>
         transform.getInputs(),
         getClass().getSimpleName());
     return PTransformReplacement.of(
-        PCollectionList.<T>empty(transform.getPipeline()), new CreateEmptyFromList<T>());
+        PCollectionList.empty(transform.getPipeline()), new CreateEmptyFromList<T>());
   }
 
   @Override

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.sdk.extensions.sorter;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -30,7 +29,7 @@ import org.apache.beam.sdk.values.KV;
 import org.junit.rules.ExpectedException;
 
 /** A set of basic tests for {@link Sorter}s. */
-public class SorterTestUtils {
+class SorterTestUtils {
 
   public static void testEmpty(Sorter sorter) throws Exception {
     assertThat(sorter.sort(), is(emptyIterable()));
@@ -69,7 +68,7 @@ public class SorterTestUtils {
 
   /** Class that generates a new sorter. Used when performance testing multiple sorter creation. */
   interface SorterGenerator {
-    Sorter generateSorter() throws Exception;
+    Sorter generateSorter();
   }
 
   /**

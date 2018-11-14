@@ -34,6 +34,7 @@ cdef class OutputStream(object):
   cpdef bytes get(self)
   cpdef size_t size(self) except? -1
   cdef extend(self, size_t missing)
+  cpdef _clear(self)
 
 
 cdef class ByteCountingOutputStream(OutputStream):
@@ -53,7 +54,7 @@ cdef class InputStream(object):
   cdef bytes all
   cdef char* allc
 
-  cpdef size_t size(self) except? -1
+  cpdef ssize_t size(self) except? -1
   cpdef bytes read(self, size_t len)
   cpdef long read_byte(self) except? -1
   cpdef libc.stdint.int64_t read_var_int64(self) except? -1

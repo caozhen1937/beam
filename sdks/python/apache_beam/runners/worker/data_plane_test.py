@@ -25,11 +25,13 @@ import logging
 import sys
 import threading
 import unittest
-
 from concurrent import futures
+
 import grpc
+from future.utils import raise_
 
 from apache_beam.portability.api import beam_fn_api_pb2
+from apache_beam.portability.api import beam_fn_api_pb2_grpc
 from apache_beam.runners.worker import data_plane
 
 
@@ -49,7 +51,7 @@ def timeout(timeout_secs):
       thread.join(timeout_secs)
       if exc_info:
         t, v, tb = exc_info  # pylint: disable=unbalanced-tuple-unpacking
-        raise t, v, tb
+        raise_(t, v, tb)
       assert not thread.is_alive(), 'timed out after %s seconds' % timeout_secs
     return wrapper
   return decorate
@@ -62,12 +64,12 @@ class DataChannelTest(unittest.TestCase):
     data_channel_service = data_plane.GrpcServerDataChannel()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    beam_fn_api_pb2.add_BeamFnDataServicer_to_server(
+    beam_fn_api_pb2_grpc.add_BeamFnDataServicer_to_server(
         data_channel_service, server)
     test_port = server.add_insecure_port('[::]:0')
     server.start()
 
-    data_channel_stub = beam_fn_api_pb2.BeamFnDataStub(
+    data_channel_stub = beam_fn_api_pb2_grpc.BeamFnDataStub(
         grpc.insecure_channel('localhost:%s' % test_port))
     data_channel_client = data_plane.GrpcClientDataChannel(data_channel_stub)
 
@@ -100,38 +102,38 @@ class DataChannelTest(unittest.TestCase):
         name='out')
 
     # Single write.
-    send('0', target_1, 'abc')
+    send('0', target_1, b'abc')
     self.assertEqual(
         list(to_channel.input_elements('0', [target_1])),
         [beam_fn_api_pb2.Elements.Data(
             instruction_reference='0',
             target=target_1,
-            data='abc')])
+            data=b'abc')])
 
     # Multiple interleaved writes to multiple instructions.
     target_2 = beam_fn_api_pb2.Target(
         primitive_transform_reference='2',
         name='out')
 
-    send('1', target_1, 'abc')
-    send('2', target_1, 'def')
+    send('1', target_1, b'abc')
+    send('2', target_1, b'def')
     self.assertEqual(
         list(to_channel.input_elements('1', [target_1])),
         [beam_fn_api_pb2.Elements.Data(
             instruction_reference='1',
             target=target_1,
-            data='abc')])
-    send('2', target_2, 'ghi')
+            data=b'abc')])
+    send('2', target_2, b'ghi')
     self.assertEqual(
         list(to_channel.input_elements('2', [target_1, target_2])),
         [beam_fn_api_pb2.Elements.Data(
             instruction_reference='2',
             target=target_1,
-            data='def'),
+            data=b'def'),
          beam_fn_api_pb2.Elements.Data(
              instruction_reference='2',
              target=target_2,
-             data='ghi')])
+             data=b'ghi')])
 
 
 if __name__ == '__main__':

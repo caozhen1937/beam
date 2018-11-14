@@ -16,17 +16,23 @@
 #
 
 """Unit tests for the type-hint objects and decorators."""
-import inspect
-import unittest
 
+from __future__ import absolute_import
+
+import os
+import sys
+import typing
+import unittest
 
 import apache_beam as beam
 from apache_beam import pvalue
 from apache_beam import typehints
 from apache_beam.options.pipeline_options import OptionsContext
 from apache_beam.testing.test_pipeline import TestPipeline
-from apache_beam.testing.util import assert_that, equal_to
+from apache_beam.testing.util import assert_that
+from apache_beam.testing.util import equal_to
 from apache_beam.typehints import WithTypeHints
+from apache_beam.typehints.decorators import getfullargspec
 
 # These test often construct a pipeline as value | PTransform to test side
 # effects (e.g. errors).
@@ -42,6 +48,9 @@ class MainInputTest(unittest.TestCase):
     with self.assertRaises(typehints.TypeCheckError):
       [1, 2, 3] | beam.Map(repeat, 3)
 
+  @unittest.skipIf(sys.version_info[0] == 3 and
+                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
+                   'This test still needs to be fixed on Python 3.')
   def test_non_function(self):
     result = ['a', 'bb', 'c'] | beam.Map(str.upper)
     self.assertEqual(['A', 'BB', 'C'], sorted(result))
@@ -59,8 +68,8 @@ class MainInputTest(unittest.TestCase):
       [1, 2, 3] | beam.Map(str.upper)
 
   def test_loose_bounds(self):
-    @typehints.with_input_types(typehints.Union[int, float, long])
-    @typehints.with_output_types(basestring)
+    @typehints.with_input_types(typehints.Union[int, float])
+    @typehints.with_output_types(str)
     def format_number(x):
       return '%g' % x
     result = [1, 2, 3] | beam.Map(format_number)
@@ -98,6 +107,37 @@ class MainInputTest(unittest.TestCase):
       [1, 2, 3] | (beam.ParDo(my_do_fn) | 'again' >> beam.ParDo(my_do_fn))
 
 
+@unittest.skipIf(sys.version_info[0] == 3 and
+                 os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
+                 'This test still needs to be fixed on Python 3.')
+class NativeTypesTest(unittest.TestCase):
+
+  def test_good_main_input(self):
+    @typehints.with_input_types(typing.Tuple[str, int])
+    def munge(s_i):
+      (s, i) = s_i
+      return (s + 's', i * 2)
+    result = [('apple', 5), ('pear', 3)] | beam.Map(munge)
+    self.assertEqual([('apples', 10), ('pears', 6)], sorted(result))
+
+  def test_bad_main_input(self):
+    @typehints.with_input_types(typing.Tuple[str, str])
+    def munge(s_i):
+      (s, i) = s_i
+      return (s + 's', i * 2)
+    with self.assertRaises(typehints.TypeCheckError):
+      [('apple', 5), ('pear', 3)] | beam.Map(munge)
+
+  def test_bad_main_output(self):
+    @typehints.with_input_types(typing.Tuple[int, int])
+    @typehints.with_output_types(typing.Tuple[str, str])
+    def munge(a_b):
+      (a, b) = a_b
+      return (str(a), str(b))
+    with self.assertRaises(typehints.TypeCheckError):
+      [(5, 4), (3, 2)] | beam.Map(munge) | 'Again' >> beam.Map(munge)
+
+
 class SideInputTest(unittest.TestCase):
 
   def _run_repeat_test(self, repeat):
@@ -122,7 +162,7 @@ class SideInputTest(unittest.TestCase):
       ['a', 'bb', 'c'] | beam.Map(repeat, times='z')
     with self.assertRaises(typehints.TypeCheckError):
       ['a', 'bb', 'c'] | beam.Map(repeat, 3, 4)
-    if not inspect.getargspec(repeat).defaults:
+    if not getfullargspec(repeat).defaults:
       with self.assertRaises(typehints.TypeCheckError):
         ['a', 'bb', 'c'] | beam.Map(repeat)
 
@@ -164,6 +204,9 @@ class SideInputTest(unittest.TestCase):
   # with self.assertRaises(typehints.TypeCheckError):
   #   ['a', 'bb', 'c'] | beam.Map(repeat, 'z')
 
+  @unittest.skipIf(sys.version_info[0] == 3 and
+                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
+                   'This test still needs to be fixed on Python 3.')
   def test_deferred_side_inputs(self):
     @typehints.with_input_types(str, int)
     def repeat(s, times):
@@ -178,6 +221,9 @@ class SideInputTest(unittest.TestCase):
     with self.assertRaises(typehints.TypeCheckError):
       main_input | 'bis' >> beam.Map(repeat, pvalue.AsSingleton(bad_side_input))
 
+  @unittest.skipIf(sys.version_info[0] == 3 and
+                   os.environ.get('RUN_SKIPPED_PY3_TESTS') != '1',
+                   'This test still needs to be fixed on Python 3.')
   def test_deferred_side_input_iterable(self):
     @typehints.with_input_types(str, typehints.Iterable[str])
     def concat(glue, items):

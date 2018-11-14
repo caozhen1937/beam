@@ -30,9 +30,7 @@ import org.joda.time.Instant;
  */
 public abstract class PartitioningWindowFn<T, W extends BoundedWindow>
     extends NonMergingWindowFn<T, W> {
-  /**
-   * Returns the single window to which elements with this timestamp belong.
-   */
+  /** Returns the single window to which elements with this timestamp belong. */
   public abstract W assignWindow(Instant timestamp);
 
   @Override
@@ -57,5 +55,10 @@ public abstract class PartitioningWindowFn<T, W extends BoundedWindow>
   @Override
   public Instant getOutputTime(Instant inputTimestamp, W window) {
     return inputTimestamp;
+  }
+
+  @Override
+  public final boolean assignsToOneWindow() {
+    return true;
   }
 }

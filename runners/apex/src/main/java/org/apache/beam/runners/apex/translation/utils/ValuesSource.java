@@ -15,8 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.apex.translation.utils;
+
+import static org.apache.beam.sdk.io.UnboundedSource.CheckpointMark.NOOP_CHECKPOINT_MARK;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -32,9 +33,7 @@ import org.apache.beam.sdk.io.UnboundedSource;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.joda.time.Instant;
 
-/**
- * Unbounded source that reads from a Java {@link Iterable}.
- */
+/** Unbounded source that reads from a Java {@link Iterable}. */
 public class ValuesSource<T> extends UnboundedSource<T, UnboundedSource.CheckpointMark> {
   private static final long serialVersionUID = 1L;
 
@@ -59,8 +58,8 @@ public class ValuesSource<T> extends UnboundedSource<T, UnboundedSource.Checkpoi
   }
 
   @Override
-  public UnboundedReader<T> createReader(PipelineOptions options,
-      @Nullable CheckpointMark checkpointMark) {
+  public UnboundedReader<T> createReader(
+      PipelineOptions options, @Nullable CheckpointMark checkpointMark) {
     ByteArrayInputStream bis = new ByteArrayInputStream(codedValues);
     try {
       Iterable<T> values = this.iterableCoder.decode(bis, Context.OUTER);
@@ -77,11 +76,7 @@ public class ValuesSource<T> extends UnboundedSource<T, UnboundedSource.Checkpoi
   }
 
   @Override
-  public void validate() {
-  }
-
-  @Override
-  public Coder<T> getDefaultOutputCoder() {
+  public Coder<T> getOutputCoder() {
     return iterableCoder.getElemCoder();
   }
 
@@ -126,8 +121,7 @@ public class ValuesSource<T> extends UnboundedSource<T, UnboundedSource.Checkpoi
     }
 
     @Override
-    public void close() throws IOException {
-    }
+    public void close() throws IOException {}
 
     @Override
     public Instant getWatermark() {
@@ -136,7 +130,7 @@ public class ValuesSource<T> extends UnboundedSource<T, UnboundedSource.Checkpoi
 
     @Override
     public CheckpointMark getCheckpointMark() {
-      return null;
+      return NOOP_CHECKPOINT_MARK;
     }
 
     @Override

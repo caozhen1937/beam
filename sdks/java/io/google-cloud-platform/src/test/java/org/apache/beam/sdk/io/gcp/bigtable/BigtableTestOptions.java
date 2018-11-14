@@ -21,17 +21,17 @@ import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.testing.TestPipelineOptions;
 
-/**
- * Properties needed when using Bigtable with the Beam SDK.
- */
+/** Properties needed when using Bigtable with the Beam SDK. */
 public interface BigtableTestOptions extends TestPipelineOptions {
-  @Description("Project ID for Bigtable")
-  @Default.String("apache-beam-testing")
-  String getProjectId();
-  void setProjectId(String value);
-
   @Description("Instance ID for Bigtable")
   @Default.String("beam-test")
   String getInstanceId();
+
   void setInstanceId(String value);
+
+  @Description("Project for Bigtable")
+  @Default.String("")
+  String getBigtableProject();
+
+  void setBigtableProject(String value);
 }

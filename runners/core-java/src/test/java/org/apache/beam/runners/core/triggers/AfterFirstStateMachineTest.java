@@ -21,7 +21,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
-import org.apache.beam.runners.core.triggers.TriggerStateMachine.OnceTriggerStateMachine;
 import org.apache.beam.runners.core.triggers.TriggerStateMachineTester.SimpleTriggerStateMachineTester;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.IntervalWindow;
@@ -36,17 +35,16 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
-/**
- * Tests for {@link AfterFirstStateMachine}.
- */
+/** Tests for {@link AfterFirstStateMachine}. */
 @RunWith(JUnit4.class)
 public class AfterFirstStateMachineTest {
 
-  @Mock private OnceTriggerStateMachine mockTrigger1;
-  @Mock private OnceTriggerStateMachine mockTrigger2;
+  @Mock private TriggerStateMachine mockTrigger1;
+  @Mock private TriggerStateMachine mockTrigger2;
   private SimpleTriggerStateMachineTester<IntervalWindow> tester;
+
   private static TriggerStateMachine.TriggerContext anyTriggerContext() {
-    return Mockito.<TriggerStateMachine.TriggerContext>any();
+    return Mockito.any();
   }
 
   @Before
@@ -91,8 +89,10 @@ public class AfterFirstStateMachineTest {
 
   @Test
   public void testOnlyT2ShouldFireFixedWindows() throws Exception {
-    tester = TriggerStateMachineTester.forTrigger(
-    AfterFirstStateMachine.of(mockTrigger1, mockTrigger2), FixedWindows.of(Duration.millis(10)));
+    tester =
+        TriggerStateMachineTester.forTrigger(
+            AfterFirstStateMachine.of(mockTrigger1, mockTrigger2),
+            FixedWindows.of(Duration.millis(10)));
     tester.injectElements(1);
     IntervalWindow window = new IntervalWindow(new Instant(1), new Instant(11));
 
@@ -106,8 +106,10 @@ public class AfterFirstStateMachineTest {
 
   @Test
   public void testBothShouldFireFixedWindows() throws Exception {
-    tester = TriggerStateMachineTester.forTrigger(
-    AfterFirstStateMachine.of(mockTrigger1, mockTrigger2), FixedWindows.of(Duration.millis(10)));
+    tester =
+        TriggerStateMachineTester.forTrigger(
+            AfterFirstStateMachine.of(mockTrigger1, mockTrigger2),
+            FixedWindows.of(Duration.millis(10)));
     tester.injectElements(1);
     IntervalWindow window = new IntervalWindow(new Instant(1), new Instant(11));
 
@@ -120,18 +122,19 @@ public class AfterFirstStateMachineTest {
   }
 
   /**
-   * Tests that if the first trigger rewinds to be non-finished in the merged window,
-   * then it becomes the currently active trigger again, with real triggers.
+   * Tests that if the first trigger rewinds to be non-finished in the merged window, then it
+   * becomes the currently active trigger again, with real triggers.
    */
   @Test
   public void testShouldFireAfterMerge() throws Exception {
-    tester = TriggerStateMachineTester.forTrigger(
-        AfterEachStateMachine.inOrder(
-            AfterFirstStateMachine.of(
-                AfterPaneStateMachine.elementCountAtLeast(5),
-                AfterWatermarkStateMachine.pastEndOfWindow()),
-            RepeatedlyStateMachine.forever(AfterPaneStateMachine.elementCountAtLeast(1))),
-        Sessions.withGapDuration(Duration.millis(10)));
+    tester =
+        TriggerStateMachineTester.forTrigger(
+            AfterEachStateMachine.inOrder(
+                AfterFirstStateMachine.of(
+                    AfterPaneStateMachine.elementCountAtLeast(5),
+                    AfterWatermarkStateMachine.pastEndOfWindow()),
+                RepeatedlyStateMachine.forever(AfterPaneStateMachine.elementCountAtLeast(1))),
+            Sessions.withGapDuration(Duration.millis(10)));
 
     // Finished the AfterFirst in the first window
     tester.injectElements(1);

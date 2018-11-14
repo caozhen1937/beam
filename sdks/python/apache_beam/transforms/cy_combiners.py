@@ -15,14 +15,24 @@
 # limitations under the License.
 #
 
+# cython: language_level=3
+
 """A library of basic cythonized CombineFn subclasses.
 
 For internal use only; no backwards-compatibility guarantees.
 """
 
 from __future__ import absolute_import
+from __future__ import division
+
+from builtins import object
 
 from apache_beam.transforms import core
+
+try:
+  from apache_beam.transforms.cy_dataflow_distribution_counter import DataflowDistributionCounter
+except ImportError:
+  from apache_beam.transforms.py_dataflow_distribution_counter import DataflowDistributionCounter
 
 
 class AccumulatorCombineFn(core.CombineFn):
@@ -47,6 +57,10 @@ class AccumulatorCombineFn(core.CombineFn):
   def __eq__(self, other):
     return (isinstance(other, AccumulatorCombineFn)
             and self._accumulator_type is other._accumulator_type)
+
+  def __ne__(self, other):
+    # TODO(BEAM-5949): Needed for Python 2 compatibility.
+    return not self == other
 
   def __hash__(self):
     return hash(self._accumulator_type)
@@ -77,6 +91,7 @@ class SumInt64Accumulator(object):
     self.value = 0
 
   def add_input(self, element):
+    global INT64_MAX, INT64_MIN  # pylint: disable=global-variable-not-assigned
     element = int(element)
     if not INT64_MIN <= element <= INT64_MAX:
       raise OverflowError(element)
@@ -156,7 +171,7 @@ class MeanInt64Accumulator(object):
       self.sum %= 2**64
       if self.sum >= INT64_MAX:
         self.sum -= 2**64
-    return self.sum / self.count if self.count else _NAN
+    return self.sum // self.count if self.count else _NAN
 
 
 class CountCombineFn(AccumulatorCombineFn):
@@ -252,7 +267,7 @@ class MeanDoubleAccumulator(object):
       self.count += accumulator.count
 
   def extract_output(self):
-    return self.sum / self.count if self.count else _NAN
+    return self.sum // self.count if self.count else _NAN
 
 
 class SumFloatFn(AccumulatorCombineFn):
@@ -307,3 +322,16 @@ class AnyCombineFn(AccumulatorCombineFn):
 
 class AllCombineFn(AccumulatorCombineFn):
   _accumulator_type = AllAccumulator
+
+
+class DataflowDistributionCounterFn(AccumulatorCombineFn):
+  """A subclass of cy_combiners.AccumulatorCombineFn.
+
+  Make DataflowDistributionCounter able to report to Dataflow service via
+  CounterFactory.
+
+  When cythonized DataflowDistributinoCounter available, make
+  CounterFn combine with cythonized module, otherwise, combine with python
+  version.
+  """
+  _accumulator_type = DataflowDistributionCounter

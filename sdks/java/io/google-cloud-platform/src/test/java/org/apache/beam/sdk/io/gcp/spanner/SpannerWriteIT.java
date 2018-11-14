@@ -23,7 +23,6 @@ import static org.junit.Assert.assertThat;
 
 import com.google.cloud.spanner.Database;
 import com.google.cloud.spanner.DatabaseAdminClient;
-import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Operation;
@@ -31,9 +30,15 @@ import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
+import com.google.common.base.Throwables;
 import com.google.spanner.admin.database.v1.CreateDatabaseMetadata;
+import java.io.Serializable;
 import java.util.Collections;
-
+import javax.annotation.Nullable;
+import org.apache.beam.sdk.PipelineResult;
+import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.io.GenerateSequence;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
@@ -42,11 +47,13 @@ import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.testing.TestPipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.beam.sdk.transforms.Wait;
+import org.hamcrest.TypeSafeMatcher;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
@@ -57,27 +64,26 @@ public class SpannerWriteIT {
   private static final int MAX_DB_NAME_LENGTH = 30;
 
   @Rule public final transient TestPipeline p = TestPipeline.create();
+  @Rule public transient ExpectedException thrown = ExpectedException.none();
 
   /** Pipeline options for this test. */
   public interface SpannerTestPipelineOptions extends TestPipelineOptions {
-    @Description("Project ID for Spanner")
-    @Default.String("apache-beam-testing")
-    String getProjectId();
-    void setProjectId(String value);
-
     @Description("Instance ID to write to in Spanner")
     @Default.String("beam-test")
     String getInstanceId();
+
     void setInstanceId(String value);
 
     @Description("Database ID prefix to write to in Spanner")
     @Default.String("beam-testdb")
     String getDatabaseIdPrefix();
+
     void setDatabaseIdPrefix(String value);
 
     @Description("Table name")
     @Default.String("users")
     String getTable();
+
     void setTable(String value);
   }
 
@@ -85,13 +91,16 @@ public class SpannerWriteIT {
   private DatabaseAdminClient databaseAdminClient;
   private SpannerTestPipelineOptions options;
   private String databaseName;
+  private String project;
 
   @Before
   public void setUp() throws Exception {
     PipelineOptionsFactory.register(SpannerTestPipelineOptions.class);
     options = TestPipeline.testingPipelineOptions().as(SpannerTestPipelineOptions.class);
 
-    spanner = SpannerOptions.newBuilder().setProjectId(options.getProjectId()).build().getService();
+    project = options.as(GcpOptions.class).getProject();
+
+    spanner = SpannerOptions.newBuilder().setProjectId(project).build().getService();
 
     databaseName = generateDatabaseName();
 
@@ -109,55 +118,117 @@ public class SpannerWriteIT {
                     + options.getTable()
                     + " ("
                     + "  Key           INT64,"
-                    + "  Value         STRING(MAX),"
+                    + "  Value         STRING(MAX) NOT NULL,"
                     + ") PRIMARY KEY (Key)"));
     op.waitFor();
   }
 
   private String generateDatabaseName() {
-    String random = RandomStringUtils
-        .randomAlphanumeric(MAX_DB_NAME_LENGTH - 1 - options.getDatabaseIdPrefix().length())
-        .toLowerCase();
+    String random =
+        RandomUtils.randomAlphaNumeric(
+            MAX_DB_NAME_LENGTH - 1 - options.getDatabaseIdPrefix().length());
     return options.getDatabaseIdPrefix() + "-" + random;
   }
 
   @Test
   public void testWrite() throws Exception {
-    p.apply(GenerateSequence.from(0).to(100))
+    int numRecords = 100;
+    p.apply(GenerateSequence.from(0).to(numRecords))
         .apply(ParDo.of(new GenerateMutations(options.getTable())))
         .apply(
             SpannerIO.write()
-                .withProjectId(options.getProjectId())
+                .withProjectId(project)
                 .withInstanceId(options.getInstanceId())
                 .withDatabaseId(databaseName));
 
-    p.run();
-    DatabaseClient databaseClient =
-        spanner.getDatabaseClient(
-            DatabaseId.of(
-                options.getProjectId(), options.getInstanceId(), databaseName));
+    PipelineResult result = p.run();
+    result.waitUntilFinish();
+    assertThat(result.getState(), is(PipelineResult.State.DONE));
+    assertThat(countNumberOfRecords(), equalTo((long) numRecords));
+  }
 
-    ResultSet resultSet =
-        databaseClient
-            .singleUse()
-            .executeQuery(Statement.of("SELECT COUNT(*) FROM " + options.getTable()));
-    assertThat(resultSet.next(), is(true));
-    assertThat(resultSet.getLong(0), equalTo(100L));
-    assertThat(resultSet.next(), is(false));
+  @Test
+  public void testSequentialWrite() throws Exception {
+    int numRecords = 100;
+
+    SpannerWriteResult stepOne =
+        p.apply("first step", GenerateSequence.from(0).to(numRecords))
+            .apply(ParDo.of(new GenerateMutations(options.getTable())))
+            .apply(
+                SpannerIO.write()
+                    .withProjectId(project)
+                    .withInstanceId(options.getInstanceId())
+                    .withDatabaseId(databaseName));
+
+    p.apply("second step", GenerateSequence.from(numRecords).to(2 * numRecords))
+        .apply("Gen mutations", ParDo.of(new GenerateMutations(options.getTable())))
+        .apply(Wait.on(stepOne.getOutput()))
+        .apply(
+            "write to table2",
+            SpannerIO.write()
+                .withProjectId(project)
+                .withInstanceId(options.getInstanceId())
+                .withDatabaseId(databaseName));
+
+    PipelineResult result = p.run();
+    result.waitUntilFinish();
+    assertThat(result.getState(), is(PipelineResult.State.DONE));
+    assertThat(countNumberOfRecords(), equalTo(2L * numRecords));
+  }
+
+  @Test
+  public void testReportFailures() throws Exception {
+    int numRecords = 100;
+    p.apply(GenerateSequence.from(0).to(2 * numRecords))
+        .apply(ParDo.of(new GenerateMutations(options.getTable(), new DivBy2())))
+        .apply(
+            SpannerIO.write()
+                .withProjectId(project)
+                .withInstanceId(options.getInstanceId())
+                .withDatabaseId(databaseName)
+                .withFailureMode(SpannerIO.FailureMode.REPORT_FAILURES));
+
+    PipelineResult result = p.run();
+    result.waitUntilFinish();
+    assertThat(result.getState(), is(PipelineResult.State.DONE));
+    assertThat(countNumberOfRecords(), equalTo((long) numRecords));
+  }
+
+  @Test
+  public void testFailFast() throws Exception {
+    thrown.expect(new StackTraceContainsString("SpannerException"));
+    thrown.expect(new StackTraceContainsString("Value must not be NULL in table users"));
+    int numRecords = 100;
+    p.apply(GenerateSequence.from(0).to(2 * numRecords))
+        .apply(ParDo.of(new GenerateMutations(options.getTable(), new DivBy2())))
+        .apply(
+            SpannerIO.write()
+                .withProjectId(project)
+                .withInstanceId(options.getInstanceId())
+                .withDatabaseId(databaseName));
+
+    PipelineResult result = p.run();
+    result.waitUntilFinish();
   }
 
   @After
   public void tearDown() throws Exception {
     databaseAdminClient.dropDatabase(options.getInstanceId(), databaseName);
-    spanner.closeAsync().get();
+    spanner.close();
   }
 
   private static class GenerateMutations extends DoFn<Long, Mutation> {
     private final String table;
     private final int valueSize = 100;
+    private final Predicate<Long> injectError;
+
+    public GenerateMutations(String table, Predicate<Long> injectError) {
+      this.table = table;
+      this.injectError = injectError;
+    }
 
     public GenerateMutations(String table) {
-      this.table = table;
+      this(table, Predicates.<Long>alwaysFalse());
     }
 
     @ProcessElement
@@ -165,9 +236,50 @@ public class SpannerWriteIT {
       Mutation.WriteBuilder builder = Mutation.newInsertOrUpdateBuilder(table);
       Long key = c.element();
       builder.set("Key").to(key);
-      builder.set("Value").to(RandomStringUtils.randomAlphabetic(valueSize));
+      String value = injectError.apply(key) ? null : RandomUtils.randomAlphaNumeric(valueSize);
+      builder.set("Value").to(value);
       Mutation mutation = builder.build();
       c.output(mutation);
+    }
+  }
+
+  private long countNumberOfRecords() {
+    ResultSet resultSet =
+        spanner
+            .getDatabaseClient(DatabaseId.of(project, options.getInstanceId(), databaseName))
+            .singleUse()
+            .executeQuery(Statement.of("SELECT COUNT(*) FROM " + options.getTable()));
+    assertThat(resultSet.next(), is(true));
+    long result = resultSet.getLong(0);
+    assertThat(resultSet.next(), is(false));
+    return result;
+  }
+
+  private static class DivBy2 implements Predicate<Long>, Serializable {
+
+    @Override
+    public boolean apply(@Nullable Long input) {
+      return input % 2 == 0;
+    }
+  }
+
+  static class StackTraceContainsString extends TypeSafeMatcher<Exception> {
+
+    private String str;
+
+    public StackTraceContainsString(String str) {
+      this.str = str;
+    }
+
+    @Override
+    public void describeTo(org.hamcrest.Description description) {
+      description.appendText("stack trace contains string '" + str + "'");
+    }
+
+    @Override
+    protected boolean matchesSafely(Exception e) {
+      String stacktrace = Throwables.getStackTraceAsString(e);
+      return stacktrace.contains(str);
     }
   }
 }

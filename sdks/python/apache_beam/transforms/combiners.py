@@ -18,24 +18,32 @@
 """A library of basic combiner PTransform subclasses."""
 
 from __future__ import absolute_import
+from __future__ import division
 
+import heapq
 import operator
 import random
+from builtins import object
+from builtins import zip
+from functools import cmp_to_key
+
+from past.builtins import long
 
 from apache_beam.transforms import core
 from apache_beam.transforms import cy_combiners
 from apache_beam.transforms import ptransform
+from apache_beam.transforms import window
 from apache_beam.transforms.display import DisplayDataItem
+from apache_beam.typehints import KV
 from apache_beam.typehints import Any
 from apache_beam.typehints import Dict
-from apache_beam.typehints import KV
+from apache_beam.typehints import Iterable
 from apache_beam.typehints import List
 from apache_beam.typehints import Tuple
 from apache_beam.typehints import TypeVariable
 from apache_beam.typehints import Union
 from apache_beam.typehints import with_input_types
 from apache_beam.typehints import with_output_types
-
 
 __all__ = [
     'Count',
@@ -78,14 +86,16 @@ class MeanCombineFn(core.CombineFn):
   def create_accumulator(self):
     return (0, 0)
 
-  def add_input(self, (sum_, count), element):
+  def add_input(self, sum_count, element):
+    (sum_, count) = sum_count
     return sum_ + element, count + 1
 
   def merge_accumulators(self, accumulators):
     sums, counts = zip(*accumulators)
     return sum(sums), sum(counts)
 
-  def extract_output(self, (sum_, count)):
+  def extract_output(self, sum_count):
+    (sum_, count) = sum_count
     if count == 0:
       return float('NaN')
     return sum_ / float(count)
@@ -136,7 +146,7 @@ class CountCombineFn(core.CombineFn):
     return accumulator + 1
 
   def add_inputs(self, accumulator, elements):
-    return accumulator + len(elements)
+    return accumulator + len(list(elements))
 
   def merge_accumulators(self, accumulators):
     return sum(accumulators)
@@ -149,6 +159,7 @@ class Top(object):
   """Combiners for obtaining extremal elements."""
   # pylint: disable=no-self-argument
 
+  @staticmethod
   @ptransform.ptransform_fn
   def Of(pcoll, n, compare=None, *args, **kwargs):
     """Obtain a list of the compare-most N elements in a PCollection.
@@ -174,9 +185,24 @@ class Top(object):
     """
     key = kwargs.pop('key', None)
     reverse = kwargs.pop('reverse', False)
-    return pcoll | core.CombineGlobally(
-        TopCombineFn(n, compare, key, reverse), *args, **kwargs)
+    if not args and not kwargs and not key and pcoll.windowing.is_default():
+      if reverse:
+        if compare is None or compare is operator.lt:
+          compare = operator.gt
+        else:
+          original_compare = compare
+          compare = lambda a, b: original_compare(b, a)
+      # This is a more efficient global algorithm.
+      return (
+          pcoll
+          | core.ParDo(_TopPerBundle(n, compare))
+          | core.GroupByKey()
+          | core.ParDo(_MergeTopPerBundle(n, compare)))
+    else:
+      return pcoll | core.CombineGlobally(
+          TopCombineFn(n, compare, key, reverse), *args, **kwargs)
 
+  @staticmethod
   @ptransform.ptransform_fn
   def PerKey(pcoll, n, compare=None, *args, **kwargs):
     """Identifies the compare-most N elements associated with each key.
@@ -210,25 +236,115 @@ class Top(object):
     return pcoll | core.CombinePerKey(
         TopCombineFn(n, compare, key, reverse), *args, **kwargs)
 
+  @staticmethod
   @ptransform.ptransform_fn
   def Largest(pcoll, n):
     """Obtain a list of the greatest N elements in a PCollection."""
     return pcoll | Top.Of(n)
 
+  @staticmethod
   @ptransform.ptransform_fn
   def Smallest(pcoll, n):
     """Obtain a list of the least N elements in a PCollection."""
     return pcoll | Top.Of(n, reverse=True)
 
+  @staticmethod
   @ptransform.ptransform_fn
   def LargestPerKey(pcoll, n):
     """Identifies the N greatest elements associated with each key."""
     return pcoll | Top.PerKey(n)
 
+  @staticmethod
   @ptransform.ptransform_fn
   def SmallestPerKey(pcoll, n, reverse=True):
     """Identifies the N least elements associated with each key."""
     return pcoll | Top.PerKey(n, reverse=True)
+
+
+class _ComparableValue(object):
+
+  __slots__ = ('value', 'less_than')
+
+  def __init__(self, value, less_than):
+    self.value = value
+    self.less_than = less_than
+
+  def __lt__(self, other):
+    return self.less_than(self.value, other.value)
+
+  def __repr__(self):
+    return "_ComparableValue[%s]" % self.value
+
+
+@with_input_types(T)
+@with_output_types(KV[None, List[T]])
+class _TopPerBundle(core.DoFn):
+  def __init__(self, n, less_than):
+    self._n = n
+    self._less_than = None if less_than is operator.le else less_than
+
+  def start_bundle(self):
+    self._heap = []
+
+  def process(self, element):
+    if self._less_than is not None:
+      element = _ComparableValue(element, self._less_than)
+    if len(self._heap) < self._n:
+      heapq.heappush(self._heap, element)
+    else:
+      heapq.heappushpop(self._heap, element)
+
+  def finish_bundle(self):
+    # Though sorting here results in more total work, this allows us to
+    # skip most elements in the reducer.
+    # Essentially, given s map bundles, we are trading about O(sn) compares in
+    # the (single) reducer for O(sn log n) compares across all mappers.
+    self._heap.sort()
+
+    # Unwrap to avoid serialization via pickle.
+    if self._less_than:
+      yield window.GlobalWindows.windowed_value(
+          (None, [wrapper.value for wrapper in self._heap]))
+    else:
+      yield window.GlobalWindows.windowed_value(
+          (None, self._heap))
+
+
+@with_input_types(KV[None, Iterable[List[T]]])
+@with_output_types(List[T])
+class _MergeTopPerBundle(core.DoFn):
+  def __init__(self, n, less_than):
+    self._n = n
+    self._less_than = None if less_than is operator.le else less_than
+
+  def process(self, key_and_bundles):
+    _, bundles = key_and_bundles
+    heap = []
+    for bundle in bundles:
+      if not heap:
+        if self._less_than:
+          heap = [
+              _ComparableValue(element, self._less_than) for element in bundle]
+        else:
+          heap = bundle
+        continue
+      for element in reversed(bundle):
+        if self._less_than is not None:
+          element = _ComparableValue(element, self._less_than)
+        if len(heap) < self._n:
+          heapq.heappush(heap, element)
+        elif element <= heap[0]:
+          # Because _TopPerBundle returns sorted lists, all other elements
+          # will also be smaller.
+          break
+        else:
+          heapq.heappushpop(heap, element)
+
+    heap.sort()
+    if self._less_than:
+      yield [wrapper.value for wrapper in reversed(heap)]
+    else:
+      yield heap[::-1]
 
 
 @with_input_types(T)
@@ -278,9 +394,12 @@ class TopCombineFn(core.CombineFn):
   def _sort_buffer(self, buffer, lt):
     if lt in (operator.gt, operator.lt):
       buffer.sort(key=self._key_fn, reverse=self._reverse)
+    elif self._key_fn:
+      buffer.sort(key=cmp_to_key(
+          (lambda a, b: (not lt(self._key_fn(a), self._key_fn(b)))
+           - (not lt(self._key_fn(b), self._key_fn(a))))))
     else:
-      buffer.sort(cmp=lambda a, b: (not lt(a, b)) - (not lt(b, a)),
-                  key=self._key_fn)
+      buffer.sort(key=cmp_to_key(lambda a, b: (not lt(a, b)) - (not lt(b, a))))
 
   def display_data(self):
     return {'n': self._n,
@@ -369,10 +488,12 @@ class Sample(object):
   """Combiners for sampling n elements without replacement."""
   # pylint: disable=no-self-argument
 
+  @staticmethod
   @ptransform.ptransform_fn
   def FixedSizeGlobally(pcoll, n):
     return pcoll | core.CombineGlobally(SampleCombineFn(n))
 
+  @staticmethod
   @ptransform.ptransform_fn
   def FixedSizePerKey(pcoll, n):
     return pcoll | core.CombinePerKey(SampleCombineFn(n))
@@ -527,30 +648,35 @@ class ToDictCombineFn(core.CombineFn):
     return accumulator
 
 
+class _CurriedFn(core.CombineFn):
+  """Wrapped CombineFn with extra arguments."""
+
+  def __init__(self, fn, args, kwargs):
+    self.fn = fn
+    self.args = args
+    self.kwargs = kwargs
+
+  def create_accumulator(self):
+    return self.fn.create_accumulator(*self.args, **self.kwargs)
+
+  def add_input(self, accumulator, element):
+    return self.fn.add_input(accumulator, element, *self.args, **self.kwargs)
+
+  def merge_accumulators(self, accumulators):
+    return self.fn.merge_accumulators(accumulators, *self.args, **self.kwargs)
+
+  def extract_output(self, accumulator):
+    return self.fn.extract_output(accumulator, *self.args, **self.kwargs)
+
+  def apply(self, elements):
+    return self.fn.apply(elements, *self.args, **self.kwargs)
+
+
 def curry_combine_fn(fn, args, kwargs):
   if not args and not kwargs:
     return fn
-
-  # Create CurriedFn class for the combiner
-  class CurriedFn(core.CombineFn):
-    """CombineFn that applies extra arguments."""
-
-    def create_accumulator(self):
-      return fn.create_accumulator(*args, **kwargs)
-
-    def add_input(self, accumulator, element):
-      return fn.add_input(accumulator, element, *args, **kwargs)
-
-    def merge_accumulators(self, accumulators):
-      return fn.merge_accumulators(accumulators, *args, **kwargs)
-
-    def extract_output(self, accumulator):
-      return fn.extract_output(accumulator, *args, **kwargs)
-
-    def apply(self, elements):
-      return fn.apply(elements, *args, **kwargs)
-
-  return CurriedFn()
+  else:
+    return _CurriedFn(fn, args, kwargs)
 
 
 class PhasedCombineFnExecutor(object):

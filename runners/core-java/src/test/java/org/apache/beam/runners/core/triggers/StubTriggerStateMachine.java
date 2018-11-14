@@ -18,12 +18,9 @@
 package org.apache.beam.runners.core.triggers;
 
 import com.google.common.collect.Lists;
-import org.apache.beam.runners.core.triggers.TriggerStateMachine.OnceTriggerStateMachine;
 
-/**
- * No-op {@link OnceTriggerStateMachine} implementation for testing.
- */
-abstract class StubTriggerStateMachine extends OnceTriggerStateMachine {
+/** No-op {@link TriggerStateMachine} implementation for testing. */
+abstract class StubTriggerStateMachine extends TriggerStateMachine {
   /**
    * Create a stub {@link TriggerStateMachine} instance which returns the specified name on {@link
    * #toString()}.
@@ -38,20 +35,17 @@ abstract class StubTriggerStateMachine extends OnceTriggerStateMachine {
   }
 
   protected StubTriggerStateMachine() {
-    super(Lists.<TriggerStateMachine>newArrayList());
+    super(Lists.newArrayList());
   }
 
   @Override
-  protected void onOnlyFiring(TriggerContext context) throws Exception {
-  }
+  public void onFire(TriggerContext context) throws Exception {}
 
   @Override
-  public void onElement(OnElementContext c) throws Exception {
-  }
+  public void onElement(OnElementContext c) throws Exception {}
 
   @Override
-  public void onMerge(OnMergeContext c) throws Exception {
-  }
+  public void onMerge(OnMergeContext c) throws Exception {}
 
   @Override
   public boolean shouldFire(TriggerContext context) throws Exception {

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.core.construction;
 
 import com.google.common.collect.ImmutableList;
@@ -35,7 +34,7 @@ class CoderTranslators {
   private CoderTranslators() {}
 
   static <T extends Coder<?>> CoderTranslator<T> atomic(final Class<T> clazz) {
-    return new CoderTranslator<T>() {
+    return new SimpleStructuredCoderTranslator<T>() {
       @Override
       public List<? extends Coder<?>> getComponents(T from) {
         return Collections.emptyList();
@@ -49,7 +48,7 @@ class CoderTranslators {
   }
 
   static CoderTranslator<KvCoder<?, ?>> kv() {
-    return new CoderTranslator<KvCoder<?, ?>>() {
+    return new SimpleStructuredCoderTranslator<KvCoder<?, ?>>() {
       @Override
       public List<? extends Coder<?>> getComponents(KvCoder<?, ?> from) {
         return ImmutableList.of(from.getKeyCoder(), from.getValueCoder());
@@ -63,7 +62,7 @@ class CoderTranslators {
   }
 
   static CoderTranslator<IterableCoder<?>> iterable() {
-    return new CoderTranslator<IterableCoder<?>>() {
+    return new SimpleStructuredCoderTranslator<IterableCoder<?>>() {
       @Override
       public List<? extends Coder<?>> getComponents(IterableCoder<?> from) {
         return Collections.singletonList(from.getElemCoder());
@@ -76,8 +75,22 @@ class CoderTranslators {
     };
   }
 
+  static CoderTranslator<Timer.Coder<?>> timer() {
+    return new SimpleStructuredCoderTranslator<Timer.Coder<?>>() {
+      @Override
+      public List<? extends Coder<?>> getComponents(Timer.Coder<?> from) {
+        return from.getCoderArguments();
+      }
+
+      @Override
+      public Timer.Coder<?> fromComponents(List<Coder<?>> components) {
+        return Timer.Coder.of(components.get(0));
+      }
+    };
+  }
+
   static CoderTranslator<LengthPrefixCoder<?>> lengthPrefix() {
-    return new CoderTranslator<LengthPrefixCoder<?>>() {
+    return new SimpleStructuredCoderTranslator<LengthPrefixCoder<?>>() {
       @Override
       public List<? extends Coder<?>> getComponents(LengthPrefixCoder<?> from) {
         return Collections.singletonList(from.getValueCoder());
@@ -91,7 +104,7 @@ class CoderTranslators {
   }
 
   static CoderTranslator<FullWindowedValueCoder<?>> fullWindowedValue() {
-    return new CoderTranslator<FullWindowedValueCoder<?>>() {
+    return new SimpleStructuredCoderTranslator<FullWindowedValueCoder<?>>() {
       @Override
       public List<? extends Coder<?>> getComponents(FullWindowedValueCoder<?> from) {
         return ImmutableList.of(from.getValueCoder(), from.getWindowCoder());
@@ -103,5 +116,15 @@ class CoderTranslators {
             components.get(0), (Coder<BoundedWindow>) components.get(1));
       }
     };
+  }
+
+  public abstract static class SimpleStructuredCoderTranslator<T extends Coder<?>>
+      implements CoderTranslator<T> {
+    @Override
+    public final T fromComponents(List<Coder<?>> components, byte[] payload) {
+      return fromComponents(components);
+    }
+
+    protected abstract T fromComponents(List<Coder<?>> components);
   }
 }

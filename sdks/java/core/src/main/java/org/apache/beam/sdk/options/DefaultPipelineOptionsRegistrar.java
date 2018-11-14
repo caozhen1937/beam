@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.sdk.options;
 
 import com.google.auto.service.AutoService;
@@ -33,6 +32,9 @@ public class DefaultPipelineOptionsRegistrar implements PipelineOptionsRegistrar
         .add(PipelineOptions.class)
         .add(ApplicationNameOptions.class)
         .add(StreamingOptions.class)
+        .add(ExperimentalOptions.class)
+        .add(SdkHarnessOptions.class)
+        .add(PortablePipelineOptions.class)
         .build();
   }
 }

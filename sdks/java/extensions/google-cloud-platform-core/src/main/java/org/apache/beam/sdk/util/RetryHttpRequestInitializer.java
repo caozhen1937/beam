@@ -17,8 +17,9 @@
  */
 package org.apache.beam.sdk.util;
 
-import com.google.api.client.http.HttpBackOffIOExceptionHandler;
-import com.google.api.client.http.HttpBackOffUnsuccessfulResponseHandler;
+import static com.google.api.client.util.BackOffUtils.next;
+
+import com.google.api.client.http.HttpIOExceptionHandler;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.HttpResponse;
@@ -39,8 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Implements a request initializer that adds retry handlers to all
- * HttpRequests.
+ * Implements a request initializer that adds retry handlers to all HttpRequests.
  *
  * <p>Also can take a HttpResponseInterceptor to be applied to the responses.
  */
@@ -48,89 +48,137 @@ public class RetryHttpRequestInitializer implements HttpRequestInitializer {
 
   private static final Logger LOG = LoggerFactory.getLogger(RetryHttpRequestInitializer.class);
 
-  /**
-   * Http response codes that should be silently ignored.
-   */
-  private static final Set<Integer> DEFAULT_IGNORED_RESPONSE_CODES = new HashSet<>(
-      Arrays.asList(307 /* Redirect, handled by the client library */,
-                    308 /* Resume Incomplete, handled by the client library */));
+  /** Http response codes that should be silently ignored. */
+  private static final Set<Integer> DEFAULT_IGNORED_RESPONSE_CODES =
+      new HashSet<>(
+          Arrays.asList(
+              307 /* Redirect, handled by the client library */,
+              308 /* Resume Incomplete, handled by the client library */));
 
-  /**
-   * Http response timeout to use for hanging gets.
-   */
+  /** Http response timeout to use for hanging gets. */
   private static final int HANGING_GET_TIMEOUT_SEC = 80;
 
-  private static class LoggingHttpBackOffIOExceptionHandler
-      extends HttpBackOffIOExceptionHandler {
-    public LoggingHttpBackOffIOExceptionHandler(BackOff backOff) {
-      super(backOff);
+  /** Handlers used to provide additional logging information on unsuccessful HTTP requests. */
+  private static class LoggingHttpBackOffHandler
+      implements HttpIOExceptionHandler, HttpUnsuccessfulResponseHandler {
+
+    private final Sleeper sleeper;
+    private final BackOff ioExceptionBackOff;
+    private final BackOff unsuccessfulResponseBackOff;
+    private final Set<Integer> ignoredResponseCodes;
+    private int ioExceptionRetries;
+    private int unsuccessfulResponseRetries;
+
+    private LoggingHttpBackOffHandler(
+        Sleeper sleeper,
+        BackOff ioExceptionBackOff,
+        BackOff unsucessfulResponseBackOff,
+        Set<Integer> ignoredResponseCodes) {
+      this.sleeper = sleeper;
+      this.ioExceptionBackOff = ioExceptionBackOff;
+      this.unsuccessfulResponseBackOff = unsucessfulResponseBackOff;
+      this.ignoredResponseCodes = ignoredResponseCodes;
     }
 
     @Override
     public boolean handleIOException(HttpRequest request, boolean supportsRetry)
         throws IOException {
-      boolean willRetry = super.handleIOException(request, supportsRetry);
+      // We will retry if the request supports retry or the backoff was successful.
+      // Note that the order of these checks is important since
+      // backOffWasSuccessful will perform a sleep.
+      boolean willRetry = supportsRetry && backOffWasSuccessful(ioExceptionBackOff);
       if (willRetry) {
+        ioExceptionRetries += 1;
         LOG.debug("Request failed with IOException, will retry: {}", request.getUrl());
       } else {
+        String message =
+            "Request failed with IOException, "
+                + "performed {} retries due to IOExceptions, "
+                + "performed {} retries due to unsuccessful status codes, "
+                + "HTTP framework says request {} be retried, "
+                + "(caller responsible for retrying): {}";
         LOG.warn(
-            "Request failed with IOException (caller responsible for retrying): {}",
+            message,
+            ioExceptionRetries,
+            unsuccessfulResponseRetries,
+            supportsRetry ? "can" : "cannot",
             request.getUrl());
       }
       return willRetry;
     }
-  }
-
-  private static class LoggingHttpBackoffUnsuccessfulResponseHandler
-      implements HttpUnsuccessfulResponseHandler {
-    private final HttpBackOffUnsuccessfulResponseHandler handler;
-    private final Set<Integer> ignoredResponseCodes;
-
-    public LoggingHttpBackoffUnsuccessfulResponseHandler(BackOff backoff,
-        Sleeper sleeper, Set<Integer> ignoredResponseCodes) {
-      this.ignoredResponseCodes = ignoredResponseCodes;
-      handler = new HttpBackOffUnsuccessfulResponseHandler(backoff);
-      handler.setSleeper(sleeper);
-      handler.setBackOffRequired(
-          new HttpBackOffUnsuccessfulResponseHandler.BackOffRequired() {
-            @Override
-            public boolean isRequired(HttpResponse response) {
-              int statusCode = response.getStatusCode();
-              return (statusCode / 100 == 5) ||  // 5xx: server error
-                  statusCode == 429;             // 429: Too many requests
-            }
-          });
-    }
 
     @Override
-    public boolean handleResponse(HttpRequest request, HttpResponse response,
-        boolean supportsRetry) throws IOException {
-      boolean retry = handler.handleResponse(request, response, supportsRetry);
-      if (retry) {
-        LOG.debug("Request failed with code {}, will retry: {}",
-            response.getStatusCode(), request.getUrl());
-
-      } else if (!ignoredResponseCodes.contains(response.getStatusCode())) {
-        LOG.warn(
-            "Request failed with code {} (caller responsible for retrying): {}",
+    public boolean handleResponse(HttpRequest request, HttpResponse response, boolean supportsRetry)
+        throws IOException {
+      // We will retry if the request supports retry and the status code requires a backoff
+      // and the backoff was successful. Note that the order of these checks is important since
+      // backOffWasSuccessful will perform a sleep.
+      boolean willRetry =
+          supportsRetry
+              && retryOnStatusCode(response.getStatusCode())
+              && backOffWasSuccessful(unsuccessfulResponseBackOff);
+      if (willRetry) {
+        unsuccessfulResponseRetries += 1;
+        LOG.debug(
+            "Request failed with code {}, will retry: {}",
             response.getStatusCode(),
             request.getUrl());
+      } else {
+        String message =
+            "Request failed with code {}, "
+                + "performed {} retries due to IOExceptions, "
+                + "performed {} retries due to unsuccessful status codes, "
+                + "HTTP framework says request {} be retried, "
+                + "(caller responsible for retrying): {}";
+        if (ignoredResponseCodes.contains(response.getStatusCode())) {
+          // Log ignored response codes at a lower level
+          LOG.debug(
+              message,
+              response.getStatusCode(),
+              ioExceptionRetries,
+              unsuccessfulResponseRetries,
+              supportsRetry ? "can" : "cannot",
+              request.getUrl());
+        } else {
+          LOG.warn(
+              message,
+              response.getStatusCode(),
+              ioExceptionRetries,
+              unsuccessfulResponseRetries,
+              supportsRetry ? "can" : "cannot",
+              request.getUrl());
+        }
       }
+      return willRetry;
+    }
 
-      return retry;
+    /** Returns true iff performing the backoff was successful. */
+    private boolean backOffWasSuccessful(BackOff backOff) {
+      try {
+        return next(sleeper, backOff);
+      } catch (InterruptedException | IOException e) {
+        return false;
+      }
+    }
+
+    /** Returns true iff the {@code statusCode} represents an error that should be retried. */
+    private boolean retryOnStatusCode(int statusCode) {
+      return (statusCode == 0) // Code 0 usually means no response / network error
+          || (statusCode / 100 == 5) // 5xx: server error
+          || statusCode == 429; // 429: Too many requests
     }
   }
 
-  private final HttpResponseInterceptor responseInterceptor;  // response Interceptor to use
+  private final HttpResponseInterceptor responseInterceptor; // response Interceptor to use
 
-  private final NanoClock nanoClock;  // used for testing
+  private final NanoClock nanoClock; // used for testing
 
-  private final Sleeper sleeper;  // used for testing
+  private final Sleeper sleeper; // used for testing
 
   private Set<Integer> ignoredResponseCodes = new HashSet<>(DEFAULT_IGNORED_RESPONSE_CODES);
 
   public RetryHttpRequestInitializer() {
-    this(Collections.<Integer>emptyList());
+    this(Collections.emptyList());
   }
 
   /**
@@ -147,8 +195,7 @@ public class RetryHttpRequestInitializer implements HttpRequestInitializer {
   public RetryHttpRequestInitializer(
       Collection<Integer> additionalIgnoredResponseCodes,
       @Nullable HttpResponseInterceptor responseInterceptor) {
-    this(NanoClock.SYSTEM, Sleeper.DEFAULT, additionalIgnoredResponseCodes,
-        responseInterceptor);
+    this(NanoClock.SYSTEM, Sleeper.DEFAULT, additionalIgnoredResponseCodes, responseInterceptor);
   }
 
   /**
@@ -159,7 +206,9 @@ public class RetryHttpRequestInitializer implements HttpRequestInitializer {
    * @param additionalIgnoredResponseCodes a list of HTTP status codes that should not be logged.
    */
   RetryHttpRequestInitializer(
-      NanoClock nanoClock, Sleeper sleeper, Collection<Integer> additionalIgnoredResponseCodes,
+      NanoClock nanoClock,
+      Sleeper sleeper,
+      Collection<Integer> additionalIgnoredResponseCodes,
       HttpResponseInterceptor responseInterceptor) {
     this.nanoClock = nanoClock;
     this.sleeper = sleeper;
@@ -173,20 +222,19 @@ public class RetryHttpRequestInitializer implements HttpRequestInitializer {
     // TODO: Do this exclusively for work requests.
     request.setReadTimeout(HANGING_GET_TIMEOUT_SEC * 1000);
 
-    // Back off on retryable http errors.
-    request.setUnsuccessfulResponseHandler(
-        // A back-off multiplier of 2 raises the maximum request retrying time
-        // to approximately 5 minutes (keeping other back-off parameters to
-        // their default values).
-        new LoggingHttpBackoffUnsuccessfulResponseHandler(
-            new ExponentialBackOff.Builder().setNanoClock(nanoClock)
-                                            .setMultiplier(2).build(),
-            sleeper, ignoredResponseCodes));
+    LoggingHttpBackOffHandler loggingHttpBackOffHandler =
+        new LoggingHttpBackOffHandler(
+            sleeper,
+            // Back off on retryable http errors and IOExceptions.
+            // A back-off multiplier of 2 raises the maximum request retrying time
+            // to approximately 5 minutes (keeping other back-off parameters to
+            // their default values).
+            new ExponentialBackOff.Builder().setNanoClock(nanoClock).setMultiplier(2).build(),
+            new ExponentialBackOff.Builder().setNanoClock(nanoClock).setMultiplier(2).build(),
+            ignoredResponseCodes);
 
-    // Retry immediately on IOExceptions.
-    LoggingHttpBackOffIOExceptionHandler loggingBackoffHandler =
-        new LoggingHttpBackOffIOExceptionHandler(BackOff.ZERO_BACKOFF);
-    request.setIOExceptionHandler(loggingBackoffHandler);
+    request.setUnsuccessfulResponseHandler(loggingHttpBackOffHandler);
+    request.setIOExceptionHandler(loggingHttpBackOffHandler);
 
     // Set response initializer
     if (responseInterceptor != null) {

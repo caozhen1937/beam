@@ -19,21 +19,26 @@
 
 Only those coders listed in __all__ are part of the public API of this module.
 """
+from __future__ import absolute_import
 
 import base64
-import cPickle as pickle
-import google.protobuf
+import sys
+from builtins import object
+
+import google.protobuf.wrappers_pb2
+from future.moves import pickle
 
 from apache_beam.coders import coder_impl
+from apache_beam.portability import common_urns
+from apache_beam.portability import python_urns
 from apache_beam.portability.api import beam_runner_api_pb2
-from apache_beam.utils import urns
 from apache_beam.utils import proto_utils
 
 # pylint: disable=wrong-import-order, wrong-import-position, ungrouped-imports
 try:
-  from stream import get_varint_size
+  from .stream import get_varint_size
 except ImportError:
-  from slow_stream import get_varint_size
+  from .slow_stream import get_varint_size
 # pylint: enable=wrong-import-order, wrong-import-position, ungrouped-imports
 
 
@@ -58,12 +63,13 @@ __all__ = ['Coder',
 
 def serialize_coder(coder):
   from apache_beam.internal import pickler
-  return '%s$%s' % (coder.__class__.__name__, pickler.dumps(coder))
+  return b'%s$%s' % (coder.__class__.__name__.encode('utf-8'),
+                     pickler.dumps(coder))
 
 
 def deserialize_coder(serialized):
   from apache_beam.internal import pickler
-  return pickler.loads(serialized.split('$', 1)[1])
+  return pickler.loads(serialized.split(b'$', 1)[1])
 # pylint: enable=wrong-import-order, wrong-import-position
 
 
@@ -94,6 +100,16 @@ class Coder(object):
       Whether coder is deterministic.
     """
     return False
+
+  def as_deterministic_coder(self, step_label, error_message=None):
+    """Returns a deterministic version of self, if possible.
+
+    Otherwise raises a value error.
+    """
+    if self.is_deterministic():
+      return self
+    else:
+      raise ValueError(error_message or "'%s' cannot be made deterministic.")
 
   def estimate_size(self, value):
     """Estimates the encoded size of the given value, in bytes.
@@ -196,32 +212,95 @@ class Coder(object):
   def __repr__(self):
     return self.__class__.__name__
 
+  # pylint: disable=protected-access
   def __eq__(self, other):
-    # pylint: disable=protected-access
     return (self.__class__ == other.__class__
             and self._dict_without_impl() == other._dict_without_impl())
-    # pylint: enable=protected-access
+  # pylint: enable=protected-access
+
+  def __ne__(self, other):
+    # TODO(BEAM-5949): Needed for Python 2 compatibility.
+    return not self == other
+
+  def __hash__(self):
+    return hash(type(self))
+
+  _known_urns = {}
+
+  @classmethod
+  def register_urn(cls, urn, parameter_type, fn=None):
+    """Registers a urn with a constructor.
+
+    For example, if 'beam:fn:foo' had parameter type FooPayload, one could
+    write `RunnerApiFn.register_urn('bean:fn:foo', FooPayload, foo_from_proto)`
+    where foo_from_proto took as arguments a FooPayload and a PipelineContext.
+    This function can also be used as a decorator rather than passing the
+    callable in as the final parameter.
+
+    A corresponding to_runner_api_parameter method would be expected that
+    returns the tuple ('beam:fn:foo', FooPayload)
+    """
+    def register(fn):
+      cls._known_urns[urn] = parameter_type, fn
+      return staticmethod(fn)
+    if fn:
+      # Used as a statement.
+      register(fn)
+    else:
+      # Used as a decorator.
+      return register
 
   def to_runner_api(self, context):
-    """For internal use only; no backwards-compatibility guarantees.
-    """
-    # TODO(BEAM-115): Use specialized URNs and components.
+    urn, typed_param, components = self.to_runner_api_parameter(context)
     return beam_runner_api_pb2.Coder(
         spec=beam_runner_api_pb2.SdkFunctionSpec(
+            environment_id=(
+                context.default_environment_id() if context else None),
             spec=beam_runner_api_pb2.FunctionSpec(
-                urn=urns.PICKLED_CODER,
-                parameter=proto_utils.pack_Any(
-                    google.protobuf.wrappers_pb2.BytesValue(
-                        value=serialize_coder(self))))))
+                urn=urn,
+                payload=typed_param.SerializeToString()
+                if typed_param is not None else None)),
+        component_coder_ids=[context.coders.get_id(c) for c in components])
+
+  @classmethod
+  def from_runner_api(cls, coder_proto, context):
+    """Converts from an SdkFunctionSpec to a Fn object.
+
+    Prefer registering a urn with its parameter type and constructor.
+    """
+    parameter_type, constructor = cls._known_urns[coder_proto.spec.spec.urn]
+    return constructor(
+        proto_utils.parse_Bytes(coder_proto.spec.spec.payload, parameter_type),
+        [context.coders.get_by_id(c) for c in coder_proto.component_coder_ids],
+        context)
+
+  def to_runner_api_parameter(self, context):
+    return (
+        python_urns.PICKLED_CODER,
+        google.protobuf.wrappers_pb2.BytesValue(value=serialize_coder(self)),
+        ())
 
   @staticmethod
-  def from_runner_api(proto, context):
-    """For internal use only; no backwards-compatibility guarantees.
+  def register_structured_urn(urn, cls):
+    """Register a coder that's completely defined by its urn and its
+    component(s), if any, which are passed to construct the instance.
     """
-    any_proto = proto.spec.spec.parameter
-    bytes_proto = google.protobuf.wrappers_pb2.BytesValue()
-    any_proto.Unpack(bytes_proto)
-    return deserialize_coder(bytes_proto.value)
+    cls.to_runner_api_parameter = (
+        lambda self, unused_context: (urn, None, self._get_component_coders()))
+
+    # pylint: disable=unused-variable
+    @Coder.register_urn(urn, None)
+    def from_runner_api_parameter(unused_payload, components, unused_context):
+      if components:
+        return cls(*components)
+      else:
+        return cls()
+
+
+@Coder.register_urn(
+    python_urns.PICKLED_CODER, google.protobuf.wrappers_pb2.BytesValue)
+def _pickle_from_runner_api_parameter(payload, components, context):
+  return deserialize_coder(payload.value)
 
 
 class StrUtf8Coder(Coder):
@@ -240,12 +319,17 @@ class StrUtf8Coder(Coder):
 class ToStringCoder(Coder):
   """A default string coder used if no sink coder is specified."""
 
-  def encode(self, value):
-    if isinstance(value, unicode):
-      return value.encode('utf-8')
-    elif isinstance(value, str):
-      return value
-    return str(value)
+  if sys.version_info.major == 2:
+
+    def encode(self, value):
+      # pylint: disable=unicode-builtin
+      return (value.encode('utf-8') if isinstance(value, unicode)  # noqa: F821
+              else str(value))
+
+  else:
+
+    def encode(self, value):
+      return value if isinstance(value, bytes) else str(value).encode('utf-8')
 
   def decode(self, _):
     raise NotImplementedError('ToStringCoder cannot be used for decoding.')
@@ -298,6 +382,9 @@ class BytesCoder(FastCoder):
     return hash(type(self))
 
 
+Coder.register_structured_urn(common_urns.coders.BYTES.urn, BytesCoder)
+
+
 class VarIntCoder(FastCoder):
   """Variable-length integer coder."""
 
@@ -307,11 +394,19 @@ class VarIntCoder(FastCoder):
   def is_deterministic(self):
     return True
 
+  def as_cloud_object(self):
+    return {
+        '@type': 'kind:varint',
+    }
+
   def __eq__(self, other):
     return type(self) == type(other)
 
   def __hash__(self):
     return hash(type(self))
+
+
+Coder.register_structured_urn(common_urns.coders.VARINT.urn, VarIntCoder)
 
 
 class FloatCoder(FastCoder):
@@ -344,6 +439,34 @@ class TimestampCoder(FastCoder):
 
   def __hash__(self):
     return hash(type(self))
+
+
+class _TimerCoder(FastCoder):
+  """A coder used for timer values.
+
+  For internal use."""
+  def __init__(self, payload_coder):
+    self._payload_coder = payload_coder
+
+  def _get_component_coders(self):
+    return [self._payload_coder]
+
+  def _create_impl(self):
+    return coder_impl.TimerCoderImpl(self._payload_coder.get_impl())
+
+  def is_deterministic(self):
+    return self._payload_coder.is_deterministic()
+
+  def __eq__(self, other):
+    return (type(self) == type(other)
+            and self._payload_coder == other._payload_coder)
+
+  def __hash__(self):
+    return hash(type(self)) + hash(self._payload_coder)
+
+
+Coder.register_structured_urn(
+    common_urns.coders.TIMER.urn, _TimerCoder)
 
 
 class SingletonCoder(FastCoder):
@@ -436,6 +559,9 @@ class PickleCoder(_PickleCoderBase):
     return coder_impl.CallbackCoderImpl(
         lambda x: dumps(x, HIGHEST_PROTOCOL), pickle.loads)
 
+  def as_deterministic_coder(self, step_label, error_message=None):
+    return DeterministicFastPrimitivesCoder(self, step_label)
+
 
 class DillCoder(_PickleCoderBase):
   """Coder using dill's pickle functionality."""
@@ -482,6 +608,12 @@ class FastPrimitivesCoder(FastCoder):
 
   def is_deterministic(self):
     return self._fallback_coder.is_deterministic()
+
+  def as_deterministic_coder(self, step_label, error_message=None):
+    if self.is_deterministic():
+      return self
+    else:
+      return DeterministicFastPrimitivesCoder(self, step_label)
 
   def as_cloud_object(self, is_pair_like=True):
     value = super(FastCoder, self).as_cloud_object()
@@ -601,6 +733,13 @@ class TupleCoder(FastCoder):
   def is_deterministic(self):
     return all(c.is_deterministic() for c in self._coders)
 
+  def as_deterministic_coder(self, step_label, error_message=None):
+    if self.is_deterministic():
+      return self
+    else:
+      return TupleCoder([c.as_deterministic_coder(step_label, error_message)
+                         for c in self._coders])
+
   @staticmethod
   def from_type_hint(typehint, registry):
     return TupleCoder([registry.get_coder(t) for t in typehint.tuple_types])
@@ -647,6 +786,16 @@ class TupleCoder(FastCoder):
   def __hash__(self):
     return hash(self._coders)
 
+  def to_runner_api_parameter(self, context):
+    if self.is_kv_coder():
+      return common_urns.coders.KV.urn, None, self.coders()
+    else:
+      return super(TupleCoder, self).to_runner_api_parameter(context)
+
+  @Coder.register_urn(common_urns.coders.KV.urn, None)
+  def from_runner_api_parameter(unused_payload, components, unused_context):
+    return TupleCoder(components)
+
 
 class TupleSequenceCoder(FastCoder):
   """Coder of homogeneous tuple objects."""
@@ -659,6 +808,13 @@ class TupleSequenceCoder(FastCoder):
 
   def is_deterministic(self):
     return self._elem_coder.is_deterministic()
+
+  def as_deterministic_coder(self, step_label, error_message=None):
+    if self.is_deterministic():
+      return self
+    else:
+      return TupleSequenceCoder(
+          self._elem_coder.as_deterministic_coder(step_label, error_message))
 
   @staticmethod
   def from_type_hint(typehint, registry):
@@ -690,6 +846,13 @@ class IterableCoder(FastCoder):
   def is_deterministic(self):
     return self._elem_coder.is_deterministic()
 
+  def as_deterministic_coder(self, step_label, error_message=None):
+    if self.is_deterministic():
+      return self
+    else:
+      return IterableCoder(
+          self._elem_coder.as_deterministic_coder(step_label, error_message))
+
   def as_cloud_object(self):
     return {
         '@type': 'kind:stream',
@@ -718,6 +881,9 @@ class IterableCoder(FastCoder):
     return hash((type(self), self._elem_coder))
 
 
+Coder.register_structured_urn(common_urns.coders.ITERABLE.urn, IterableCoder)
+
+
 class GlobalWindowCoder(SingletonCoder):
   """Coder for global windows."""
 
@@ -729,6 +895,10 @@ class GlobalWindowCoder(SingletonCoder):
     return {
         '@type': 'kind:global_window',
     }
+
+
+Coder.register_structured_urn(
+    common_urns.coders.GLOBAL_WINDOW.urn, GlobalWindowCoder)
 
 
 class IntervalWindowCoder(FastCoder):
@@ -750,6 +920,10 @@ class IntervalWindowCoder(FastCoder):
 
   def __hash__(self):
     return hash(type(self))
+
+
+Coder.register_structured_urn(
+    common_urns.coders.INTERVAL_WINDOW.urn, IntervalWindowCoder)
 
 
 class WindowedValueCoder(FastCoder):
@@ -808,6 +982,10 @@ class WindowedValueCoder(FastCoder):
         (self.wrapped_value_coder, self.timestamp_coder, self.window_coder))
 
 
+Coder.register_structured_urn(
+    common_urns.coders.WINDOWED_VALUE.urn, WindowedValueCoder)
+
+
 class LengthPrefixCoder(FastCoder):
   """For internal use only; no backwards-compatibility guarantees.
 
@@ -847,3 +1025,7 @@ class LengthPrefixCoder(FastCoder):
 
   def __hash__(self):
     return hash((type(self), self._value_coder))
+
+
+Coder.register_structured_urn(
+    common_urns.coders.LENGTH_PREFIX.urn, LengthPrefixCoder)

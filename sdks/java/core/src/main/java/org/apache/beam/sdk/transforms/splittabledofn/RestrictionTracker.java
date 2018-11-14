@@ -20,23 +20,45 @@ package org.apache.beam.sdk.transforms.splittabledofn;
 import org.apache.beam.sdk.transforms.DoFn;
 
 /**
- * Manages concurrent access to the restriction and keeps track of its claimed part for a <a
+ * Manages access to the restriction and keeps track of its claimed part for a <a
  * href="https://s.apache.org/splittable-do-fn">splittable</a> {@link DoFn}.
  */
-public interface RestrictionTracker<RestrictionT> {
+public abstract class RestrictionTracker<RestrictionT, PositionT> {
+  /**
+   * Attempts to claim the block of work in the current restriction identified by the given
+   * position.
+   *
+   * <p>If this succeeds, the DoFn MUST execute the entire block of work. If this fails:
+   *
+   * <ul>
+   *   <li>{@link DoFn.ProcessElement} MUST return {@link DoFn.ProcessContinuation#stop} without
+   *       performing any additional work or emitting output (note that emitting output or
+   *       performing work from {@link DoFn.ProcessElement} is also not allowed before the first
+   *       call to this method).
+   *   <li>{@link RestrictionTracker#checkDone} MUST succeed.
+   * </ul>
+   */
+  public abstract boolean tryClaim(PositionT position);
+
   /**
    * Returns a restriction accurately describing the full range of work the current {@link
    * DoFn.ProcessElement} call will do, including already completed work.
    */
-  RestrictionT currentRestriction();
+  public abstract RestrictionT currentRestriction();
 
   /**
-   * Signals that the current {@link DoFn.ProcessElement} call should terminate as soon as possible.
-   * Modifies {@link #currentRestriction}. Returns a restriction representing the rest of the work:
-   * the old value of {@link #currentRestriction} is equivalent to the new value and the return
-   * value of this method combined. Must be called at most once on a given object.
+   * Signals that the current {@link DoFn.ProcessElement} call should terminate as soon as possible:
+   * after this method returns, the tracker MUST refuse all future claim calls, and {@link
+   * #checkDone} MUST succeed.
+   *
+   * <p>Modifies {@link #currentRestriction}. Returns a restriction representing the rest of the
+   * work: the old value of {@link #currentRestriction} is equivalent to the new value and the
+   * return value of this method combined.
+   *
+   * <p>Must be called at most once on a given object. Must not be called before the first
+   * successful {@link #tryClaim} call.
    */
-  RestrictionT checkpoint();
+  public abstract RestrictionT checkpoint();
 
   /**
    * Called by the runner after {@link DoFn.ProcessElement} returns.
@@ -44,7 +66,7 @@ public interface RestrictionTracker<RestrictionT> {
    * <p>Must throw an exception with an informative error message, if there is still any unclaimed
    * work remaining in the restriction.
    */
-  void checkDone() throws IllegalStateException;
+  public abstract void checkDone() throws IllegalStateException;
 
   // TODO: Add the more general splitRemainderAfterFraction() and other methods.
 }

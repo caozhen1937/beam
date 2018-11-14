@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.direct;
 
 import static org.apache.beam.sdk.util.ApiSurface.containsOnlyPackages;
@@ -23,6 +22,7 @@ import static org.junit.Assert.assertThat;
 
 import com.google.common.collect.ImmutableSet;
 import java.util.Set;
+import org.apache.beam.runners.direct.portable.ExecutableGraphBuilder;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineRunner;
 import org.apache.beam.sdk.metrics.MetricResults;
@@ -42,7 +42,12 @@ public class DirectRunnerApiSurfaceTest {
     // The DirectRunner can expose the Core SDK, anything exposed by the Core SDK, and itself
     @SuppressWarnings("unchecked")
     final Set<String> allowed =
-        ImmutableSet.of("org.apache.beam.sdk", "org.apache.beam.runners.direct", "org.joda.time");
+        ImmutableSet.of(
+            "org.apache.beam.sdk",
+            "org.apache.beam.runners.direct",
+            "org.joda.time",
+            "javax.annotation",
+            "java.math");
 
     final Package thisPackage = getClass().getPackage();
     final ClassLoader thisClassLoader = getClass().getClassLoader();
@@ -57,6 +62,13 @@ public class DirectRunnerApiSurfaceTest {
             .pruningClass(PipelineOptions.DirectRunner.class)
             .pruningClass(DisplayData.Builder.class)
             .pruningClass(MetricResults.class)
+            .pruningClass(DirectGraphs.class)
+            .pruningClass(
+                WatermarkManager.class /* TODO: BEAM-4237 Consider moving to local-java */)
+            .pruningClass(ExecutableGraphBuilder.class)
+            .pruningPattern(
+                "org[.]apache[.]beam[.]runners[.]direct[.]portable.*"
+                /* TODO: BEAM-4237 reconsider package layout with the ReferenceRunner */ )
             .pruningPattern("org[.]apache[.]beam[.].*Test.*")
             .pruningPattern("org[.]apache[.]beam[.].*IT")
             .pruningPattern("java[.]io.*")

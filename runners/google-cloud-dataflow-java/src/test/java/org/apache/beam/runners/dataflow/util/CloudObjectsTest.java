@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.dataflow.util;
 
 import static org.hamcrest.Matchers.emptyIterable;
@@ -58,21 +57,15 @@ import org.apache.beam.sdk.util.InstanceBuilder;
 import org.apache.beam.sdk.util.WindowedValue;
 import org.apache.beam.sdk.values.TupleTag;
 import org.junit.Test;
-import org.junit.experimental.runners.Enclosed;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameter;
 import org.junit.runners.Parameterized.Parameters;
 
-/**
- * Tests for {@link CloudObjects}.
- */
-@RunWith(Enclosed.class)
+/** Tests for {@link CloudObjects}. */
 public class CloudObjectsTest {
-  /**
-   * Tests that all of the Default Coders are tested.
-   */
+  /** Tests that all of the Default Coders are tested. */
   @RunWith(JUnit4.class)
   public static class DefaultsPresentTest {
     @Test
@@ -102,7 +95,6 @@ public class CloudObjectsTest {
       assertThat(defaultCoders, hasItem(CustomCoder.class));
     }
   }
-
 
   /**
    * Tests that all of the registered coders in {@link DefaultCoderCloudObjectTranslatorRegistrar}
@@ -136,26 +128,24 @@ public class CloudObjectsTest {
               .add(NullableCoder.of(IntervalWindow.getCoder()))
               .add(
                   UnionCoder.of(
-                      ImmutableList.<Coder<?>>of(
+                      ImmutableList.of(
                           VarLongCoder.of(),
                           ByteArrayCoder.of(),
                           KvCoder.of(VarLongCoder.of(), ByteArrayCoder.of()))))
               .add(
                   CoGbkResultCoder.of(
                       CoGbkResultSchema.of(
-                          ImmutableList.<TupleTag<?>>of(
-                              new TupleTag<Long>(), new TupleTag<byte[]>())),
-                      UnionCoder.of(
-                          ImmutableList.<Coder<?>>of(VarLongCoder.of(), ByteArrayCoder.of()))));
+                          ImmutableList.of(new TupleTag<Long>(), new TupleTag<byte[]>())),
+                      UnionCoder.of(ImmutableList.of(VarLongCoder.of(), ByteArrayCoder.of()))));
       for (Class<? extends Coder> atomicCoder :
           DefaultCoderCloudObjectTranslatorRegistrar.KNOWN_ATOMIC_CODERS) {
         dataBuilder.add(InstanceBuilder.ofType(atomicCoder).fromFactoryMethod("of").build());
       }
-      return dataBuilder
-          .build();
+      return dataBuilder.build();
     }
 
-    @Parameter(0) public Coder<?> coder;
+    @Parameter(0)
+    public Coder<?> coder;
 
     @Test
     public void toAndFromCloudObject() throws Exception {
@@ -171,13 +161,10 @@ public class CloudObjectsTest {
 
   private static class ObjectCoder extends CustomCoder<Object> {
     @Override
-    public void encode(Object value, OutputStream outStream)
-        throws CoderException, IOException {
-    }
+    public void encode(Object value, OutputStream outStream) throws CoderException, IOException {}
 
     @Override
-    public Object decode(InputStream inStream)
-        throws CoderException, IOException {
+    public Object decode(InputStream inStream) throws CoderException, IOException {
       return new Object();
     }
 
@@ -192,13 +179,10 @@ public class CloudObjectsTest {
     }
   }
 
-  /**
-   * A non-custom coder with no registered translator.
-   */
+  /** A non-custom coder with no registered translator. */
   private static class ArbitraryCoder extends StructuredCoder<Record> {
     @Override
-    public void encode(Record value, OutputStream outStream)
-        throws CoderException, IOException {}
+    public void encode(Record value, OutputStream outStream) throws CoderException, IOException {}
 
     @Override
     public Record decode(InputStream inStream) throws CoderException, IOException {

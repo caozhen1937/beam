@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.sdk.extensions.sorter;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -76,7 +75,7 @@ public class BufferedExternalSorter implements Sorter {
     }
   }
 
-  private ExternalSorter externalSorter;
+  private final ExternalSorter externalSorter;
   private InMemorySorter inMemorySorter;
 
   boolean inMemorySorterFull;

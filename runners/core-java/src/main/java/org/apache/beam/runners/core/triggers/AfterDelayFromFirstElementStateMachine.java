@@ -27,7 +27,6 @@ import org.apache.beam.runners.core.StateAccessor;
 import org.apache.beam.runners.core.StateMerging;
 import org.apache.beam.runners.core.StateTag;
 import org.apache.beam.runners.core.StateTags;
-import org.apache.beam.runners.core.triggers.TriggerStateMachine.OnceTriggerStateMachine;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.InstantCoder;
 import org.apache.beam.sdk.state.CombiningState;
@@ -42,52 +41,49 @@ import org.joda.time.format.PeriodFormat;
 import org.joda.time.format.PeriodFormatter;
 
 /**
- * A base class for triggers that happen after a processing time delay from the arrival
- * of the first element in a pane.
+ * A base class for triggers that happen after a processing time delay from the arrival of the first
+ * element in a pane.
  *
  * <p>This class is for internal use only and may change at any time.
  */
 // This class should be inlined to subclasses and deleted, simplifying them too
 // https://issues.apache.org/jira/browse/BEAM-1486
 @Experimental(Experimental.Kind.TRIGGER)
-public abstract class AfterDelayFromFirstElementStateMachine extends OnceTriggerStateMachine {
+public abstract class AfterDelayFromFirstElementStateMachine extends TriggerStateMachine {
 
-  protected static final List<SerializableFunction<Instant, Instant>> IDENTITY =
-      ImmutableList.<SerializableFunction<Instant, Instant>>of();
+  protected static final List<SerializableFunction<Instant, Instant>> IDENTITY = ImmutableList.of();
 
-  protected static final StateTag<CombiningState<Instant,
-                                                Holder<Instant>, Instant>> DELAYED_UNTIL_TAG =
-      StateTags.makeSystemTagInternal(StateTags.combiningValueFromInputInternal(
-          "delayed", InstantCoder.of(), Min.<Instant>naturalOrder()));
+  protected static final StateTag<CombiningState<Instant, Holder<Instant>, Instant>>
+      DELAYED_UNTIL_TAG =
+          StateTags.makeSystemTagInternal(
+              StateTags.combiningValueFromInputInternal(
+                  "delayed", InstantCoder.of(), Min.naturalOrder()));
 
   private static final PeriodFormatter PERIOD_FORMATTER = PeriodFormat.wordBased(Locale.ENGLISH);
 
-  /**
-   * To complete an implementation, return the desired time from the TriggerContext.
-   */
+  /** To complete an implementation, return the desired time from the TriggerContext. */
   @Nullable
   public abstract Instant getCurrentTime(TriggerStateMachine.TriggerContext context);
 
   /**
-   * To complete an implementation, return a new instance like this one, but incorporating
-   * the provided timestamp mapping functions. Generally should be used by calling the
-   * constructor of this class from the constructor of the subclass.
+   * To complete an implementation, return a new instance like this one, but incorporating the
+   * provided timestamp mapping functions. Generally should be used by calling the constructor of
+   * this class from the constructor of the subclass.
    */
   protected abstract AfterDelayFromFirstElementStateMachine newWith(
       List<SerializableFunction<Instant, Instant>> transform);
 
   /**
    * A list of timestampMappers m1, m2, m3, ... m_n considered to be composed in sequence. The
-   * overall mapping for an instance `instance` is `m_n(... m3(m2(m1(instant))`,
-   * implemented via #computeTargetTimestamp
+   * overall mapping for an instance `instance` is `m_n(... m3(m2(m1(instant))`, implemented via
+   * #computeTargetTimestamp
    */
   protected final List<SerializableFunction<Instant, Instant>> timestampMappers;
 
   protected final TimeDomain timeDomain;
 
   public AfterDelayFromFirstElementStateMachine(
-      TimeDomain timeDomain,
-      List<SerializableFunction<Instant, Instant>> timestampMappers) {
+      TimeDomain timeDomain, List<SerializableFunction<Instant, Instant>> timestampMappers) {
     super(null);
     this.timestampMappers = timestampMappers;
     this.timeDomain = timeDomain;
@@ -97,16 +93,14 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
     return computeTargetTimestamp(c.currentProcessingTime());
   }
 
-  /**
-   * The time domain according to which this trigger sets timers.
-   */
+  /** The time domain according to which this trigger sets timers. */
   public TimeDomain getTimeDomain() {
     return timeDomain;
   }
 
   /**
-   * The mapping functions applied to the arrival time of an element to determine when to
-   * set a wake-up timer for triggering.
+   * The mapping functions applied to the arrival time of an element to determine when to set a
+   * wake-up timer for triggering.
    */
   public List<SerializableFunction<Instant, Instant>> getTimestampMappers() {
     return timestampMappers;
@@ -125,8 +119,8 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
   }
 
   /**
-   * Aligns the time to be the smallest multiple of {@code size} greater than the timestamp
-   * since the epoch.
+   * Aligns the time to be the smallest multiple of {@code size} greater than the timestamp since
+   * the epoch.
    */
   public AfterDelayFromFirstElementStateMachine alignedTo(final Duration size) {
     return alignedTo(size, new Instant(0));
@@ -151,7 +145,6 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
     AfterDelayFromFirstElementStateMachine that = (AfterDelayFromFirstElementStateMachine) other;
     return this.timestampMappers.equals(that.timestampMappers);
   }
-
 
   private AfterDelayFromFirstElementStateMachine newWith(
       SerializableFunction<Instant, Instant> timestampMapper) {
@@ -237,8 +230,9 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
   }
 
   @Override
-  protected void onOnlyFiring(TriggerStateMachine.TriggerContext context) throws Exception {
+  public final void onFire(TriggerContext context) throws Exception {
     clear(context);
+    context.trigger().setFinished(true);
   }
 
   protected Instant computeTargetTimestamp(Instant time) {
@@ -249,9 +243,7 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
     return result;
   }
 
-  /**
-   * A {@link SerializableFunction} to delay the timestamp at which this triggers fires.
-   */
+  /** A {@link SerializableFunction} to delay the timestamp at which this triggers fires. */
   static final class DelayFn implements SerializableFunction<Instant, Instant> {
     private final Duration delay;
 
@@ -288,13 +280,10 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
     }
   }
 
-  /**
-   * A {@link SerializableFunction} to align an instant to the nearest interval boundary.
-   */
+  /** A {@link SerializableFunction} to align an instant to the nearest interval boundary. */
   static final class AlignFn implements SerializableFunction<Instant, Instant> {
     private final Duration size;
     private final Instant offset;
-
 
     /**
      * Aligns timestamps to the smallest multiple of {@code size} since the {@code offset} greater
@@ -322,8 +311,7 @@ public abstract class AfterDelayFromFirstElementStateMachine extends OnceTrigger
       }
 
       AlignFn other = (AlignFn) object;
-      return other.size.equals(this.size)
-          && other.offset.equals(this.offset);
+      return other.size.equals(this.size) && other.offset.equals(this.offset);
     }
 
     @Override

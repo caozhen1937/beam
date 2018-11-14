@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.spark.translation.streaming;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -81,6 +80,7 @@ public class SparkRunnerStreamingContextFactory implements Function0<JavaStreami
 
     // We must first init accumulators since translators expect them to be instantiated.
     SparkRunner.initAccumulators(options, jsc);
+    //do not need to create a MetricsPusher instance here because if is called in SparkRunner.run()
 
     EvaluationContext ctxt = new EvaluationContext(jsc, pipeline, options, jssc);
     // update cache candidates

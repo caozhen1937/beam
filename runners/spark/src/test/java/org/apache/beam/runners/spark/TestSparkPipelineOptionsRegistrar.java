@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.spark;
 
 import com.google.auto.service.AutoService;
@@ -31,6 +30,6 @@ import org.apache.beam.sdk.options.PipelineOptionsRegistrar;
 public final class TestSparkPipelineOptionsRegistrar implements PipelineOptionsRegistrar {
   @Override
   public Iterable<Class<? extends PipelineOptions>> getPipelineOptions() {
-    return ImmutableList.<Class<? extends PipelineOptions>>of(TestSparkPipelineOptions.class);
+    return ImmutableList.of(TestSparkPipelineOptions.class);
   }
 }

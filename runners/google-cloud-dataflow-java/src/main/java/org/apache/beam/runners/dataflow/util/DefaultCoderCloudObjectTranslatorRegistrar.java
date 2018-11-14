@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.dataflow.util;
 
 import com.google.auto.service.AutoService;
@@ -40,6 +39,7 @@ import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CollectionCoder;
 import org.apache.beam.sdk.coders.DoubleCoder;
 import org.apache.beam.sdk.coders.DurationCoder;
+import org.apache.beam.sdk.coders.FloatCoder;
 import org.apache.beam.sdk.coders.InstantCoder;
 import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.SetCoder;
@@ -48,11 +48,12 @@ import org.apache.beam.sdk.coders.TextualIntegerCoder;
 import org.apache.beam.sdk.coders.VarIntCoder;
 import org.apache.beam.sdk.coders.VoidCoder;
 import org.apache.beam.sdk.io.gcp.bigquery.TableDestinationCoder;
+import org.apache.beam.sdk.io.gcp.bigquery.TableDestinationCoderV2;
 import org.apache.beam.sdk.io.gcp.bigquery.TableRowJsonCoder;
 
 /**
- * The {@link CoderCloudObjectTranslatorRegistrar} containing the default collection of
- * {@link Coder} {@link CloudObjectTranslator Cloud Object Translators}.
+ * The {@link CoderCloudObjectTranslatorRegistrar} containing the default collection of {@link
+ * Coder} {@link CloudObjectTranslator Cloud Object Translators}.
  */
 @AutoService(CoderCloudObjectTranslatorRegistrar.class)
 public class DefaultCoderCloudObjectTranslatorRegistrar
@@ -81,7 +82,7 @@ public class DefaultCoderCloudObjectTranslatorRegistrar
   // in core-construction
   @VisibleForTesting
   static final ImmutableSet<Class<? extends Coder>> KNOWN_ATOMIC_CODERS =
-      ImmutableSet.<Class<? extends Coder>>of(
+      ImmutableSet.of(
           BigDecimalCoder.class,
           BigEndianIntegerCoder.class,
           BigEndianLongCoder.class,
@@ -90,6 +91,7 @@ public class DefaultCoderCloudObjectTranslatorRegistrar
           ByteCoder.class,
           DoubleCoder.class,
           DurationCoder.class,
+          FloatCoder.class,
           FooterCoder.class,
           InstantCoder.class,
           IsmShardCoder.class,
@@ -97,6 +99,7 @@ public class DefaultCoderCloudObjectTranslatorRegistrar
           RandomAccessDataCoder.class,
           StringUtf8Coder.class,
           TableDestinationCoder.class,
+          TableDestinationCoderV2.class,
           TableRowJsonCoder.class,
           TextualIntegerCoder.class,
           VarIntCoder.class,
@@ -128,7 +131,6 @@ public class DefaultCoderCloudObjectTranslatorRegistrar
     for (Class<? extends Coder> atomicCoder : KNOWN_ATOMIC_CODERS) {
       builder.put(atomicCoder, CloudObjectTranslators.atomic(atomicCoder));
     }
-    return builder
-        .build();
+    return builder.build();
   }
 }

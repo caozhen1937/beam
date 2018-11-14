@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.runners.flink;
 
 import com.google.auto.service.AutoService;
@@ -25,38 +24,30 @@ import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsRegistrar;
 import org.apache.beam.sdk.runners.PipelineRunnerRegistrar;
 
-
 /**
- * AutoService registrar - will register FlinkRunner and FlinkOptions
- * as possible pipeline runner services.
+ * AutoService registrar - will register FlinkRunner and FlinkOptions as possible pipeline runner
+ * services.
  *
  * <p>It ends up in META-INF/services and gets picked up by Beam.
- *
  */
 public class FlinkRunnerRegistrar {
-  private FlinkRunnerRegistrar() { }
+  private FlinkRunnerRegistrar() {}
 
-  /**
-   * Pipeline runner registrar.
-   */
+  /** Pipeline runner registrar. */
   @AutoService(PipelineRunnerRegistrar.class)
   public static class Runner implements PipelineRunnerRegistrar {
     @Override
     public Iterable<Class<? extends PipelineRunner<?>>> getPipelineRunners() {
-      return ImmutableList.<Class<? extends PipelineRunner<?>>>of(
-          FlinkRunner.class,
-          TestFlinkRunner.class);
+      return ImmutableList.of(FlinkRunner.class, TestFlinkRunner.class);
     }
   }
 
-  /**
-   * Pipeline options registrar.
-   */
+  /** Pipeline options registrar. */
   @AutoService(PipelineOptionsRegistrar.class)
   public static class Options implements PipelineOptionsRegistrar {
     @Override
     public Iterable<Class<? extends PipelineOptions>> getPipelineOptions() {
-      return ImmutableList.<Class<? extends PipelineOptions>>of(FlinkPipelineOptions.class);
+      return ImmutableList.of(FlinkPipelineOptions.class);
     }
   }
 }

@@ -24,11 +24,12 @@ import java.util.Collection;
 import java.util.Collections;
 import org.apache.beam.runners.core.StateNamespaces.WindowNamespace;
 import org.apache.beam.runners.core.TimerInternals.TimerData;
-import org.apache.beam.runners.core.construction.ElementAndRestriction;
 import org.apache.beam.sdk.state.TimeDomain;
+import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.util.WindowedValue;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.joda.time.Instant;
 
@@ -38,16 +39,13 @@ import org.joda.time.Instant;
  */
 public class ProcessFnRunner<InputT, OutputT, RestrictionT>
     implements PushbackSideInputDoFnRunner<
-        KeyedWorkItem<String, ElementAndRestriction<InputT, RestrictionT>>, OutputT> {
-  private final DoFnRunner<
-          KeyedWorkItem<String, ElementAndRestriction<InputT, RestrictionT>>, OutputT>
-      underlying;
+        KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> {
+  private final DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> underlying;
   private final Collection<PCollectionView<?>> views;
   private final ReadyCheckingSideInputReader sideInputReader;
 
-  ProcessFnRunner(
-      DoFnRunner<KeyedWorkItem<String, ElementAndRestriction<InputT, RestrictionT>>, OutputT>
-          underlying,
+  public ProcessFnRunner(
+      DoFnRunner<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> underlying,
       Collection<PCollectionView<?>> views,
       ReadyCheckingSideInputReader sideInputReader) {
     this.underlying = underlying;
@@ -56,15 +54,19 @@ public class ProcessFnRunner<InputT, OutputT, RestrictionT>
   }
 
   @Override
+  public DoFn<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>, OutputT> getFn() {
+    return underlying.getFn();
+  }
+
+  @Override
   public void startBundle() {
     underlying.startBundle();
   }
 
   @Override
-  public Iterable<WindowedValue<KeyedWorkItem<String, ElementAndRestriction<InputT, RestrictionT>>>>
+  public Iterable<WindowedValue<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>>>
       processElementInReadyWindows(
-          WindowedValue<KeyedWorkItem<String, ElementAndRestriction<InputT, RestrictionT>>>
-              windowedKWI) {
+          WindowedValue<KeyedWorkItem<byte[], KV<InputT, RestrictionT>>> windowedKWI) {
     checkTrivialOuterWindows(windowedKWI);
     BoundedWindow window = getUnderlyingWindow(windowedKWI.getValue());
     if (!isReady(window)) {
@@ -86,7 +88,7 @@ public class ProcessFnRunner<InputT, OutputT, RestrictionT>
   }
 
   private static <T> void checkTrivialOuterWindows(
-      WindowedValue<KeyedWorkItem<String, T>> windowedKWI) {
+      WindowedValue<KeyedWorkItem<byte[], T>> windowedKWI) {
     // In practice it will be in 0 or 1 windows (ValueInEmptyWindows or ValueInGlobalWindow)
     Collection<? extends BoundedWindow> outerWindows = windowedKWI.getWindows();
     if (!outerWindows.isEmpty()) {
@@ -102,7 +104,7 @@ public class ProcessFnRunner<InputT, OutputT, RestrictionT>
     }
   }
 
-  private static <T> BoundedWindow getUnderlyingWindow(KeyedWorkItem<String, T> kwi) {
+  private static <T> BoundedWindow getUnderlyingWindow(KeyedWorkItem<byte[], T> kwi) {
     if (Iterables.isEmpty(kwi.elementsIterable())) {
       // ProcessFn sets only a single timer.
       TimerData timer = Iterables.getOnlyElement(kwi.timersIterable());

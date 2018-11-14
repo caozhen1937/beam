@@ -18,7 +18,6 @@
 package org.apache.beam.sdk.io.hcatalog;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
@@ -73,16 +72,15 @@ import org.slf4j.LoggerFactory;
  * optional parameters are database &amp; filter For instance:
  *
  * <pre>{@code
- * Map<String, String> configProperties = new HashMap<String, String>();
+ * Map<String, String> configProperties = new HashMap<>();
  * configProperties.put("hive.metastore.uris","thrift://metastore-host:port");
  *
  * pipeline
  *   .apply(HCatalogIO.read()
- *       .withConfigProperties(configProperties) //mandatory
- *       .withTable("employee") //mandatory
+ *       .withConfigProperties(configProperties)
  *       .withDatabase("default") //optional, assumes default if none specified
- *       .withFilter(filterString) //optional,
- *       should be specified if the table is partitioned
+ *       .withTable("employee")
+ *       .withFilter(filterString) //optional, may be specified if the table is partitioned
  * }</pre>
  *
  * <h3>Writing using HCatalog</h3>
@@ -94,34 +92,35 @@ import org.slf4j.LoggerFactory;
  * beforehand, the transform does not create a new table if it does not exist For instance:
  *
  * <pre>{@code
- * Map<String, String> configProperties = new HashMap<String, String>();
+ * Map<String, String> configProperties = new HashMap<>();
  * configProperties.put("hive.metastore.uris","thrift://metastore-host:port");
  *
  * pipeline
  *   .apply(...)
- *   .apply(HiveIO.write()
- *       .withConfigProperties(configProperties) //mandatory
- *       .withTable("employee") //mandatory
+ *   .apply(HCatalogIO.write()
+ *       .withConfigProperties(configProperties)
  *       .withDatabase("default") //optional, assumes default if none specified
- *       .withFilter(partitionValues) //optional,
- *       should be specified if the table is partitioned
- *       .withBatchSize(1024L)) //optional,
- *       assumes a default batch size of 1024 if none specified
+ *       .withTable("employee")
+ *       .withPartition(partitionValues) //optional, may be specified if the table is partitioned
+ *       .withBatchSize(1024L)) //optional, assumes a default batch size of 1024 if none specified
  * }</pre>
  */
-@Experimental
+@Experimental(Experimental.Kind.SOURCE_SINK)
 public class HCatalogIO {
 
   private static final Logger LOG = LoggerFactory.getLogger(HCatalogIO.class);
 
+  private static final long BATCH_SIZE = 1024L;
+  private static final String DEFAULT_DATABASE = "default";
+
   /** Write data to Hive. */
   public static Write write() {
-    return new AutoValue_HCatalogIO_Write.Builder().setBatchSize(1024L).build();
+    return new AutoValue_HCatalogIO_Write.Builder().setBatchSize(BATCH_SIZE).build();
   }
 
   /** Read data from Hive. */
   public static Read read() {
-    return new AutoValue_HCatalogIO_Read.Builder().setDatabase("default").build();
+    return new AutoValue_HCatalogIO_Read.Builder().setDatabase(DEFAULT_DATABASE).build();
   }
 
   private HCatalogIO() {}
@@ -167,7 +166,7 @@ public class HCatalogIO {
       abstract Read build();
     }
 
-    /** Sets the configuration properties like metastore URI. This is mandatory */
+    /** Sets the configuration properties like metastore URI. */
     public Read withConfigProperties(Map<String, String> configProperties) {
       return toBuilder().setConfigProperties(new HashMap<>(configProperties)).build();
     }
@@ -177,12 +176,12 @@ public class HCatalogIO {
       return toBuilder().setDatabase(database).build();
     }
 
-    /** Sets the table name to read from. This is mandatory */
+    /** Sets the table name to read from. */
     public Read withTable(String table) {
       return toBuilder().setTable(table).build();
     }
 
-    /** Sets the filter (partition) details. This is optional, assumes none if not specified */
+    /** Sets the filter details. This is optional, assumes none if not specified */
     public Read withFilter(String filter) {
       return toBuilder().setFilter(filter).build();
     }
@@ -198,13 +197,10 @@ public class HCatalogIO {
 
     @Override
     public PCollection<HCatRecord> expand(PBegin input) {
-      return input.apply(org.apache.beam.sdk.io.Read.from(new BoundedHCatalogSource(this)));
-    }
+      checkArgument(getTable() != null, "withTable() is required");
+      checkArgument(getConfigProperties() != null, "withConfigProperties() is required");
 
-    @Override
-    public void validate(PipelineOptions options) {
-      checkNotNull(getTable(), "table");
-      checkNotNull(getConfigProperties(), "configProperties");
+      return input.apply(org.apache.beam.sdk.io.Read.from(new BoundedHCatalogSource(this)));
     }
 
     @Override
@@ -220,7 +216,7 @@ public class HCatalogIO {
   /** A HCatalog {@link BoundedSource} reading {@link HCatRecord} from a given instance. */
   @VisibleForTesting
   static class BoundedHCatalogSource extends BoundedSource<HCatRecord> {
-    private Read spec;
+    private final Read spec;
 
     BoundedHCatalogSource(Read spec) {
       this.spec = spec;
@@ -228,13 +224,8 @@ public class HCatalogIO {
 
     @Override
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public Coder<HCatRecord> getDefaultOutputCoder() {
+    public Coder<HCatRecord> getOutputCoder() {
       return (Coder) WritableCoder.of(DefaultHCatRecord.class);
-    }
-
-    @Override
-    public void validate() {
-      spec.validate(null);
     }
 
     @Override
@@ -377,7 +368,7 @@ public class HCatalogIO {
     abstract String getTable();
 
     @Nullable
-    abstract Map getFilter();
+    abstract Map<String, String> getPartition();
 
     abstract long getBatchSize();
 
@@ -391,14 +382,14 @@ public class HCatalogIO {
 
       abstract Builder setTable(String table);
 
-      abstract Builder setFilter(Map partition);
+      abstract Builder setPartition(Map<String, String> partition);
 
       abstract Builder setBatchSize(long batchSize);
 
       abstract Write build();
     }
 
-    /** Sets the configuration properties like metastore URI. This is mandatory */
+    /** Sets the configuration properties like metastore URI. */
     public Write withConfigProperties(Map<String, String> configProperties) {
       return toBuilder().setConfigProperties(new HashMap<>(configProperties)).build();
     }
@@ -408,14 +399,14 @@ public class HCatalogIO {
       return toBuilder().setDatabase(database).build();
     }
 
-    /** Sets the table name to write to, the table should exist beforehand. This is mandatory */
+    /** Sets the table name to write to, the table should exist beforehand. */
     public Write withTable(String table) {
       return toBuilder().setTable(table).build();
     }
 
-    /** Sets the filter (partition) details. This is required if the table is partitioned */
-    public Write withFilter(Map filter) {
-      return toBuilder().setFilter(filter).build();
+    /** Sets the partition details. */
+    public Write withPartition(Map<String, String> partition) {
+      return toBuilder().setPartition(partition).build();
     }
 
     /**
@@ -428,14 +419,10 @@ public class HCatalogIO {
 
     @Override
     public PDone expand(PCollection<HCatRecord> input) {
+      checkArgument(getConfigProperties() != null, "withConfigProperties() is required");
+      checkArgument(getTable() != null, "withTable() is required");
       input.apply(ParDo.of(new WriteFn(this)));
       return PDone.in(input.getPipeline());
-    }
-
-    @Override
-    public void validate(PipelineOptions options) {
-      checkNotNull(getConfigProperties(), "configProperties");
-      checkNotNull(getTable(), "table");
     }
 
     private static class WriteFn extends DoFn<HCatRecord, Void> {
@@ -454,7 +441,7 @@ public class HCatalogIO {
         super.populateDisplayData(builder);
         builder.addIfNotNull(DisplayData.item("database", spec.getDatabase()));
         builder.add(DisplayData.item("table", spec.getTable()));
-        builder.addIfNotNull(DisplayData.item("filter", String.valueOf(spec.getFilter())));
+        builder.addIfNotNull(DisplayData.item("partition", String.valueOf(spec.getPartition())));
         builder.add(DisplayData.item("configProperties", spec.getConfigProperties().toString()));
         builder.add(DisplayData.item("batchSize", spec.getBatchSize()));
       }
@@ -465,7 +452,7 @@ public class HCatalogIO {
             new WriteEntity.Builder()
                 .withDatabase(spec.getDatabase())
                 .withTable(spec.getTable())
-                .withPartition(spec.getFilter())
+                .withPartition(spec.getPartition())
                 .build();
         masterWriter = DataTransferFactory.getHCatWriter(entity, spec.getConfigProperties());
         writerContext = masterWriter.prepareWrite();
@@ -504,6 +491,19 @@ public class HCatalogIO {
           throw e;
         } finally {
           hCatRecordsBatch.clear();
+        }
+      }
+
+      @Teardown
+      public void tearDown() throws Exception {
+        if (slaveWriter != null) {
+          slaveWriter = null;
+        }
+        if (masterWriter != null) {
+          masterWriter = null;
+        }
+        if (writerContext != null) {
+          writerContext = null;
         }
       }
     }

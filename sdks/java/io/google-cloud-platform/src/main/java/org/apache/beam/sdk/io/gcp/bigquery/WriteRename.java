@@ -15,150 +15,228 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.beam.sdk.io.gcp.bigquery;
 
-import com.google.api.services.bigquery.model.Job;
 import com.google.api.services.bigquery.model.JobConfigurationTableCopy;
 import com.google.api.services.bigquery.model.JobReference;
 import com.google.api.services.bigquery.model.TableReference;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import com.google.common.collect.Multimap;
 import java.io.IOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.io.gcp.bigquery.BigQueryHelpers.Status;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryHelpers.PendingJobManager;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.CreateDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.DatasetService;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryServices.JobService;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.display.DisplayData;
+import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Copies temporary tables to destination table.
+ * Copies temporary tables to destination table. The input element is an {@link Iterable} that
+ * provides the list of all temporary tables created for a given {@link TableDestination}.
  */
-class WriteRename extends DoFn<Void, Void> {
+class WriteRename extends DoFn<Iterable<KV<TableDestination, String>>, Void> {
   private static final Logger LOG = LoggerFactory.getLogger(WriteRename.class);
 
   private final BigQueryServices bqServices;
   private final PCollectionView<String> jobIdToken;
-  private final WriteDisposition writeDisposition;
-  private final CreateDisposition createDisposition;
-  // Map from final destination to a list of temporary tables that need to be copied into it.
-  private final PCollectionView<Map<TableDestination, Iterable<String>>> tempTablesView;
 
+  // In the triggered scenario, the user-supplied create and write dispositions only apply to the
+  // first trigger pane, as that's when when the table is created. Subsequent loads should always
+  // append to the table, and so use CREATE_NEVER and WRITE_APPEND dispositions respectively.
+  private final WriteDisposition firstPaneWriteDisposition;
+  private final CreateDisposition firstPaneCreateDisposition;
+  private final int maxRetryJobs;
+
+  private static class PendingJobData {
+    final BigQueryHelpers.PendingJob retryJob;
+    final TableDestination tableDestination;
+    final List<TableReference> tempTables;
+
+    public PendingJobData(
+        BigQueryHelpers.PendingJob retryJob,
+        TableDestination tableDestination,
+        List<TableReference> tempTables) {
+      this.retryJob = retryJob;
+      this.tableDestination = tableDestination;
+      this.tempTables = tempTables;
+    }
+  }
+  // All pending copy jobs.
+  private List<PendingJobData> pendingJobs = Lists.newArrayList();
 
   public WriteRename(
       BigQueryServices bqServices,
       PCollectionView<String> jobIdToken,
       WriteDisposition writeDisposition,
       CreateDisposition createDisposition,
-      PCollectionView<Map<TableDestination, Iterable<String>>> tempTablesView) {
+      int maxRetryJobs) {
     this.bqServices = bqServices;
     this.jobIdToken = jobIdToken;
-    this.writeDisposition = writeDisposition;
-    this.createDisposition = createDisposition;
-    this.tempTablesView = tempTablesView;
+    this.firstPaneWriteDisposition = writeDisposition;
+    this.firstPaneCreateDisposition = createDisposition;
+    this.maxRetryJobs = maxRetryJobs;
+  }
+
+  @StartBundle
+  public void startBundle(StartBundleContext c) {
+    pendingJobs.clear();
   }
 
   @ProcessElement
   public void processElement(ProcessContext c) throws Exception {
-    Map<TableDestination, Iterable<String>> tempTablesMap =
-        Maps.newHashMap(c.sideInput(tempTablesView));
-
-    // Process each destination table.
-    for (Map.Entry<TableDestination, Iterable<String>> entry : tempTablesMap.entrySet()) {
-      TableDestination finalTableDestination = entry.getKey();
-      List<String> tempTablesJson = Lists.newArrayList(entry.getValue());
-      // Do not copy if no temp tables are provided
-      if (tempTablesJson.size() == 0) {
-        return;
+    Multimap<TableDestination, String> tempTables = ArrayListMultimap.create();
+    for (KV<TableDestination, String> entry : c.element()) {
+      tempTables.put(entry.getKey(), entry.getValue());
+    }
+    for (Map.Entry<TableDestination, Collection<String>> entry : tempTables.asMap().entrySet()) {
+      // Process each destination table.
+      // Do not copy if no temp tables are provided.
+      if (!entry.getValue().isEmpty()) {
+        pendingJobs.add(startWriteRename(entry.getKey(), entry.getValue(), c));
       }
-
-      List<TableReference> tempTables = Lists.newArrayList();
-      for (String table : tempTablesJson) {
-        tempTables.add(BigQueryHelpers.fromJsonString(table, TableReference.class));
-      }
-
-      // Make sure each destination table gets a unique job id.
-      String jobIdPrefix = BigQueryHelpers.createJobId(
-          c.sideInput(jobIdToken), finalTableDestination, -1);
-
-      copy(
-          bqServices.getJobService(c.getPipelineOptions().as(BigQueryOptions.class)),
-          bqServices.getDatasetService(c.getPipelineOptions().as(BigQueryOptions.class)),
-          jobIdPrefix,
-          finalTableDestination.getTableReference(),
-          tempTables,
-          writeDisposition,
-          createDisposition,
-          finalTableDestination.getTableDescription());
-
-      DatasetService tableService =
-          bqServices.getDatasetService(c.getPipelineOptions().as(BigQueryOptions.class));
-      removeTemporaryTables(tableService, tempTables);
     }
   }
 
-  private void copy(
+  @FinishBundle
+  public void finishBundle(FinishBundleContext c) throws Exception {
+    DatasetService datasetService =
+        bqServices.getDatasetService(c.getPipelineOptions().as(BigQueryOptions.class));
+    PendingJobManager jobManager = new PendingJobManager();
+    for (PendingJobData pendingJob : pendingJobs) {
+      jobManager.addPendingJob(
+          pendingJob.retryJob,
+          j -> {
+            try {
+              if (pendingJob.tableDestination.getTableDescription() != null) {
+                TableReference ref = pendingJob.tableDestination.getTableReference();
+                datasetService.patchTableDescription(
+                    ref.clone()
+                        .setTableId(BigQueryHelpers.stripPartitionDecorator(ref.getTableId())),
+                    pendingJob.tableDestination.getTableDescription());
+              }
+              removeTemporaryTables(datasetService, pendingJob.tempTables);
+              return null;
+            } catch (IOException | InterruptedException e) {
+              return e;
+            }
+          });
+    }
+    jobManager.waitForDone();
+  }
+
+  private PendingJobData startWriteRename(
+      TableDestination finalTableDestination, Iterable<String> tempTableNames, ProcessContext c)
+      throws Exception {
+    WriteDisposition writeDisposition =
+        (c.pane().getIndex() == 0) ? firstPaneWriteDisposition : WriteDisposition.WRITE_APPEND;
+    CreateDisposition createDisposition =
+        (c.pane().getIndex() == 0) ? firstPaneCreateDisposition : CreateDisposition.CREATE_NEVER;
+    List<TableReference> tempTables =
+        StreamSupport.stream(tempTableNames.spliterator(), false)
+            .map(table -> BigQueryHelpers.fromJsonString(table, TableReference.class))
+            .collect(Collectors.toList());
+    ;
+
+    // Make sure each destination table gets a unique job id.
+    String jobIdPrefix =
+        BigQueryHelpers.createJobId(
+            c.sideInput(jobIdToken), finalTableDestination, -1, c.pane().getIndex());
+
+    BigQueryHelpers.PendingJob retryJob =
+        startCopy(
+            bqServices.getJobService(c.getPipelineOptions().as(BigQueryOptions.class)),
+            bqServices.getDatasetService(c.getPipelineOptions().as(BigQueryOptions.class)),
+            jobIdPrefix,
+            finalTableDestination.getTableReference(),
+            tempTables,
+            writeDisposition,
+            createDisposition);
+    return new PendingJobData(retryJob, finalTableDestination, tempTables);
+  }
+
+  private BigQueryHelpers.PendingJob startCopy(
       JobService jobService,
       DatasetService datasetService,
       String jobIdPrefix,
       TableReference ref,
       List<TableReference> tempTables,
       WriteDisposition writeDisposition,
-      CreateDisposition createDisposition,
-      @Nullable String tableDescription) throws InterruptedException, IOException {
-    JobConfigurationTableCopy copyConfig = new JobConfigurationTableCopy()
-        .setSourceTables(tempTables)
-        .setDestinationTable(ref)
-        .setWriteDisposition(writeDisposition.name())
-        .setCreateDisposition(createDisposition.name());
+      CreateDisposition createDisposition) {
+    JobConfigurationTableCopy copyConfig =
+        new JobConfigurationTableCopy()
+            .setSourceTables(tempTables)
+            .setDestinationTable(ref)
+            .setWriteDisposition(writeDisposition.name())
+            .setCreateDisposition(createDisposition.name());
+
+    String bqLocation =
+        BigQueryHelpers.getDatasetLocation(datasetService, ref.getProjectId(), ref.getDatasetId());
 
     String projectId = ref.getProjectId();
-    Job lastFailedCopyJob = null;
-    for (int i = 0; i < BatchLoads.MAX_RETRY_JOBS; ++i) {
-      String jobId = jobIdPrefix + "-" + i;
-      JobReference jobRef = new JobReference()
-          .setProjectId(projectId)
-          .setJobId(jobId);
-      jobService.startCopyJob(jobRef, copyConfig);
-      Job copyJob = jobService.pollJob(jobRef, BatchLoads.LOAD_JOB_POLL_MAX_RETRIES);
-      Status jobStatus = BigQueryHelpers.parseStatus(copyJob);
-      switch (jobStatus) {
-        case SUCCEEDED:
-          if (tableDescription != null) {
-            datasetService.patchTableDescription(ref, tableDescription);
-          }
-          return;
-        case UNKNOWN:
-          throw new RuntimeException(String.format(
-              "UNKNOWN status of copy job [%s]: %s.", jobId,
-              BigQueryHelpers.jobToPrettyString(copyJob)));
-        case FAILED:
-          lastFailedCopyJob = copyJob;
-          continue;
-        default:
-          throw new IllegalStateException(String.format(
-              "Unexpected status [%s] of load job: %s.",
-              jobStatus, BigQueryHelpers.jobToPrettyString(copyJob)));
-      }
-    }
-    throw new RuntimeException(String.format(
-        "Failed to create copy job with id prefix %s, "
-            + "reached max retries: %d, last failed copy job: %s.",
-        jobIdPrefix,
-        BatchLoads.MAX_RETRY_JOBS,
-        BigQueryHelpers.jobToPrettyString(lastFailedCopyJob)));
+    BigQueryHelpers.PendingJob retryJob =
+        new BigQueryHelpers.PendingJob(
+            jobId -> {
+              JobReference jobRef =
+                  new JobReference()
+                      .setProjectId(projectId)
+                      .setJobId(jobId.getJobId())
+                      .setLocation(bqLocation);
+              LOG.info(
+                  "Starting copy job for table {} using  {}, job id iteration {}",
+                  ref,
+                  jobRef,
+                  jobId.getRetryIndex());
+              try {
+                jobService.startCopyJob(jobRef, copyConfig);
+              } catch (IOException | InterruptedException e) {
+                LOG.warn("Copy job {} failed with {}", jobRef, e);
+                throw new RuntimeException(e);
+              }
+              return null;
+            },
+            // Function to poll the result of a load job.
+            jobId -> {
+              JobReference jobRef =
+                  new JobReference()
+                      .setProjectId(projectId)
+                      .setJobId(jobId.getJobId())
+                      .setLocation(bqLocation);
+              try {
+                return jobService.pollJob(jobRef, BatchLoads.LOAD_JOB_POLL_MAX_RETRIES);
+              } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+              }
+            },
+            // Function to lookup a job.
+            jobId -> {
+              JobReference jobRef =
+                  new JobReference()
+                      .setProjectId(projectId)
+                      .setJobId(jobId.getJobId())
+                      .setLocation(bqLocation);
+              try {
+                return jobService.getJob(jobRef);
+              } catch (InterruptedException | IOException e) {
+                throw new RuntimeException(e);
+              }
+            },
+            maxRetryJobs,
+            jobIdPrefix);
+    return retryJob;
   }
 
-  static void removeTemporaryTables(DatasetService tableService,
-      List<TableReference> tempTables) {
+  static void removeTemporaryTables(DatasetService tableService, List<TableReference> tempTables) {
     for (TableReference tableRef : tempTables) {
       try {
         LOG.debug("Deleting table {}", BigQueryHelpers.toJsonString(tableRef));
@@ -174,9 +252,11 @@ class WriteRename extends DoFn<Void, Void> {
     super.populateDisplayData(builder);
 
     builder
-        .add(DisplayData.item("writeDisposition", writeDisposition.toString())
-            .withLabel("Write Disposition"))
-        .add(DisplayData.item("createDisposition", createDisposition.toString())
-            .withLabel("Create Disposition"));
+        .add(
+            DisplayData.item("firstPaneWriteDisposition", firstPaneWriteDisposition.toString())
+                .withLabel("Write Disposition"))
+        .add(
+            DisplayData.item("firstPaneCreateDisposition", firstPaneCreateDisposition.toString())
+                .withLabel("Create Disposition"));
   }
 }

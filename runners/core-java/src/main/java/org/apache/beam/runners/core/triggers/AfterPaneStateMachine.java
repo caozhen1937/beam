@@ -23,7 +23,6 @@ import org.apache.beam.runners.core.StateAccessor;
 import org.apache.beam.runners.core.StateMerging;
 import org.apache.beam.runners.core.StateTag;
 import org.apache.beam.runners.core.StateTags;
-import org.apache.beam.runners.core.triggers.TriggerStateMachine.OnceTriggerStateMachine;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.VarLongCoder;
 import org.apache.beam.sdk.state.CombiningState;
@@ -33,12 +32,11 @@ import org.apache.beam.sdk.transforms.Sum;
  * {@link TriggerStateMachine}s that fire based on properties of the elements in the current pane.
  */
 @Experimental(Experimental.Kind.TRIGGER)
-public class AfterPaneStateMachine extends OnceTriggerStateMachine {
+public class AfterPaneStateMachine extends TriggerStateMachine {
 
-private static final StateTag<CombiningState<Long, long[], Long>>
-      ELEMENTS_IN_PANE_TAG =
-      StateTags.makeSystemTagInternal(StateTags.combiningValueFromInputInternal(
-          "count", VarLongCoder.of(), Sum.ofLongs()));
+  private static final StateTag<CombiningState<Long, long[], Long>> ELEMENTS_IN_PANE_TAG =
+      StateTags.makeSystemTagInternal(
+          StateTags.combiningValueFromInputInternal("count", VarLongCoder.of(), Sum.ofLongs()));
 
   private final int countElems;
 
@@ -47,16 +45,12 @@ private static final StateTag<CombiningState<Long, long[], Long>>
     this.countElems = countElems;
   }
 
-  /**
-   * The number of elements after which this trigger may fire.
-   */
+  /** The number of elements after which this trigger may fire. */
   public int getElementCount() {
     return countElems;
   }
 
-  /**
-   * Creates a trigger that fires when the pane contains at least {@code countElems} elements.
-   */
+  /** Creates a trigger that fires when the pane contains at least {@code countElems} elements. */
   public static AfterPaneStateMachine elementCountAtLeast(int countElems) {
     return new AfterPaneStateMachine(countElems);
   }
@@ -130,7 +124,8 @@ private static final StateTag<CombiningState<Long, long[], Long>>
   }
 
   @Override
-  protected void onOnlyFiring(TriggerStateMachine.TriggerContext context) throws Exception {
+  public void onFire(TriggerStateMachine.TriggerContext context) throws Exception {
     clear(context);
+    context.trigger().setFinished(true);
   }
 }

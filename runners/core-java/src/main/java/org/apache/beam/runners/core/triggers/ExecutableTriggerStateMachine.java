@@ -23,18 +23,18 @@ import static com.google.common.base.Preconditions.checkState;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.beam.runners.core.triggers.TriggerStateMachine.OnceTriggerStateMachine;
 import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
 
 /**
  * A wrapper around a trigger used during execution. While an actual trigger may appear multiple
- * times (both in the same trigger expression and in other trigger expressions), the
- * {@code ExecutableTrigger} wrapped around them forms a tree (only one occurrence).
+ * times (both in the same trigger expression and in other trigger expressions), the {@code
+ * ExecutableTrigger} wrapped around them forms a tree (only one occurrence).
  */
 public class ExecutableTriggerStateMachine implements Serializable {
 
   /** Store the index assigned to this trigger. */
   private final int triggerIndex;
+
   private final int firstIndexAfterSubtree;
   private final List<ExecutableTriggerStateMachine> subTriggers = new ArrayList<>();
   private final TriggerStateMachine trigger;
@@ -46,17 +46,13 @@ public class ExecutableTriggerStateMachine implements Serializable {
 
   private static <W extends BoundedWindow> ExecutableTriggerStateMachine create(
       TriggerStateMachine trigger, int nextUnusedIndex) {
-    if (trigger instanceof OnceTriggerStateMachine) {
-      return new ExecutableOnceTriggerStateMachine(
-          (OnceTriggerStateMachine) trigger, nextUnusedIndex);
-    } else {
-      return new ExecutableTriggerStateMachine(trigger, nextUnusedIndex);
-    }
+
+    return new ExecutableTriggerStateMachine(trigger, nextUnusedIndex);
   }
 
   public static <W extends BoundedWindow> ExecutableTriggerStateMachine createForOnceTrigger(
-      OnceTriggerStateMachine trigger, int nextUnusedIndex) {
-    return new ExecutableOnceTriggerStateMachine(trigger, nextUnusedIndex);
+      TriggerStateMachine trigger, int nextUnusedIndex) {
+    return new ExecutableTriggerStateMachine(trigger, nextUnusedIndex);
   }
 
   private ExecutableTriggerStateMachine(TriggerStateMachine trigger, int nextUnusedIndex) {
@@ -103,7 +99,8 @@ public class ExecutableTriggerStateMachine implements Serializable {
 
   public ExecutableTriggerStateMachine getSubTriggerContaining(int index) {
     checkNotNull(subTriggers);
-    checkState(index > triggerIndex && index < firstIndexAfterSubtree,
+    checkState(
+        index > triggerIndex && index < firstIndexAfterSubtree,
         "Cannot find sub-trigger containing index not in this tree.");
     ExecutableTriggerStateMachine previous = null;
     for (ExecutableTriggerStateMachine subTrigger : subTriggers) {
@@ -140,21 +137,8 @@ public class ExecutableTriggerStateMachine implements Serializable {
     trigger.onFire(c.forTrigger(this));
   }
 
-  /**
-   * Invoke clear for the current this trigger.
-   */
+  /** Invoke clear for the current this trigger. */
   public void invokeClear(TriggerStateMachine.TriggerContext c) throws Exception {
     trigger.clear(c.forTrigger(this));
-  }
-
-  /**
-   * {@link ExecutableTriggerStateMachine} that enforces the fact that the trigger should always
-   * FIRE_AND_FINISH and never just FIRE.
-   */
-  private static class ExecutableOnceTriggerStateMachine extends ExecutableTriggerStateMachine {
-
-    public ExecutableOnceTriggerStateMachine(OnceTriggerStateMachine trigger, int nextUnusedIndex) {
-      super(trigger, nextUnusedIndex);
-    }
   }
 }
